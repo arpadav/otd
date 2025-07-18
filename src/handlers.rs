@@ -100,11 +100,15 @@ impl Handler {
                 let method = req.method.unwrap_or("GET");
                 let path = req.path.unwrap_or("/");
                 
+                tracing::info!("Admin request: {} {}", method, path);
+                
                 let (path, query) = if let Some(pos) = path.find('?') {
                     (&path[..pos], &path[pos + 1..])
                 } else {
                     (path, "")
                 };
+
+                tracing::info!("Parsed path: '{}', query: '{}'", path, query);
 
                 let response = match (method, path) {
                     ("GET", "/") => self.web_interface().await?,
@@ -233,8 +237,11 @@ impl Handler {
             self.state.base_path.join(path)
         };
 
+        tracing::info!("Browse request - path: '{path}', full_path: '{full_path:?}'");
+
         // Security check: ensure path is within base_path
         if !full_path.starts_with(&self.state.base_path) {
+            tracing::warn!("Path traversal attempt blocked: {full_path:?}");
             return Ok(HttpResponse::forbidden());
         }
 
@@ -257,8 +264,14 @@ impl Handler {
         }
 
         let entries = match std::fs::read_dir(&full_path) {
-            Ok(entries) => entries,
-            Err(_) => return Ok(HttpResponse::not_found()),
+            Ok(entries) => {
+                tracing::info!("Successfully read directory: {full_path:?}");
+                entries
+            },
+            Err(e) => {
+                tracing::error!("Failed to read directory {full_path:?}: {e}");
+                return Ok(HttpResponse::not_found());
+            },
         };
 
         for entry in entries.flatten() {
