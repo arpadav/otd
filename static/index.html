@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>One-Time Download Links</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .panel-header {
+            background: #007acc;
+            color: white;
+            padding: 15px 20px;
+            font-weight: 600;
+        }
+        
+        .panel-content {
+            padding: 20px;
+        }
+        
+        .breadcrumb {
+            background: #f8f9fa;
+            padding: 10px 15px;
+            border-bottom: 1px solid #e9ecef;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        .file-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .file-item:hover {
+            background: #f8f9fa;
+        }
+        
+        .file-item.selected {
+            background: #e3f2fd;
+        }
+        
+        .file-checkbox {
+            margin-right: 10px;
+        }
+        
+        .file-icon {
+            margin-right: 10px;
+            font-size: 16px;
+        }
+        
+        .file-name {
+            flex: 1;
+            font-weight: 500;
+        }
+        
+        .file-size {
+            color: #666;
+            font-size: 12px;
+        }
+        
+        .staged-files {
+            max-height: 300px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        
+        .staged-item {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            margin-bottom: 5px;
+        }
+        
+        .staged-name {
+            flex: 1;
+            font-size: 14px;
+        }
+        
+        .remove-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        
+        .remove-btn:hover {
+            background: #c82333;
+        }
+        
+        .generate-section {
+            border-top: 1px solid #e9ecef;
+            padding-top: 15px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .generate-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            width: 100%;
+        }
+        
+        .generate-btn:hover {
+            background: #218838;
+        }
+        
+        .generate-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .clear-btn {
+            background: #6c757d;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            margin-bottom: 10px;
+        }
+        
+        .clear-btn:hover {
+            background: #5a6268;
+        }
+        
+        .token-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+        
+        .token-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .token-name {
+            font-weight: 600;
+            color: #007acc;
+        }
+        
+        .token-status {
+            font-size: 12px;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        
+        .status-active {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status-used {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .token-url {
+            font-family: monospace;
+            font-size: 12px;
+            background: white;
+            padding: 8px;
+            border-radius: 3px;
+            border: 1px solid #ddd;
+            word-break: break-all;
+            margin: 8px 0;
+        }
+        
+        .copy-btn {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        
+        .copy-btn:hover {
+            background: #0056b3;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        .success {
+            background: #d4edda;
+            color: #155724;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        
+        @media (max-width: 1200px) {
+            .main-content {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>One-Time Download Links</h1>
+            <p>Browse files, stage selections, and create secure one-time download links</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="panel">
+                <div class="panel-header">File Browser</div>
+                <div class="breadcrumb" id="breadcrumb">Loading...</div>
+                <div class="file-list" id="fileList">
+                    <div class="loading">Loading files...</div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <div class="panel-header">Staged Files</div>
+                <div class="panel-content">
+                    <button class="clear-btn" onclick="clearStaged()">Clear All</button>
+                    <div class="staged-files" id="stagedFiles">
+                        <div class="loading">No files staged</div>
+                    </div>
+                    
+                    <div class="generate-section">
+                        <div class="form-group">
+                            <label class="form-label" for="downloadName">Download Name (optional)</label>
+                            <input type="text" id="downloadName" class="form-input" placeholder="Leave empty for auto-naming">
+                        </div>
+                        <button class="generate-btn" id="generateBtn" onclick="generateStagedLink()" disabled>
+                            Generate Download Link
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <div class="panel-header">Generated Links</div>
+                <div class="panel-content">
+                    <div id="tokenList">
+                        <div class="loading">Loading tokens...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentPath = '';
+        let stagedFiles = new Map();
+        
+        async function loadFiles(path = '') {
+            try {
+                const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+                const files = await response.json();
+                
+                currentPath = path;
+                updateBreadcrumb(path);
+                renderFiles(files);
+            } catch (error) {
+                document.getElementById('fileList').innerHTML = 
+                    '<div class="error">Error loading files: ' + error.message + '</div>';
+            }
+        }
+        
+        function updateBreadcrumb(path) {
+            const breadcrumb = document.getElementById('breadcrumb');
+            if (!path) {
+                breadcrumb.textContent = 'Home';
+                return;
+            }
+            
+            const parts = path.split('/').filter(p => p);
+            let breadcrumbHtml = '<span onclick="loadFiles(\'\')" style="cursor: pointer; color: #007acc;">Home</span>';
+            
+            let currentPath = '';
+            for (const part of parts) {
+                currentPath += (currentPath ? '/' : '') + part;
+                breadcrumbHtml += ` / <span onclick="loadFiles('${currentPath}')" style="cursor: pointer; color: #007acc;">${part}</span>`;
+            }
+            
+            breadcrumb.innerHTML = breadcrumbHtml;
+        }
+        
+        function renderFiles(files) {
+            const fileList = document.getElementById('fileList');
+            
+            if (files.length === 0) {
+                fileList.innerHTML = '<div class="loading">No files found</div>';
+                return;
+            }
+            
+            let html = '';
+            for (const file of files) {
+                const icon = file.is_dir ? '📁' : '📄';
+                const sizeText = file.size ? formatBytes(file.size) : '';
+                const isStaged = stagedFiles.has(file.path);
+                
+                html += `
+                    <div class="file-item ${isStaged ? 'selected' : ''}" onclick="handleFileClick('${file.path}', ${file.is_dir}, event)">
+                        ${file.name !== '..' ? `<input type="checkbox" class="file-checkbox" ${isStaged ? 'checked' : ''} onclick="event.stopPropagation(); toggleStaged('${file.path}', '${file.name}', ${file.is_dir}, ${file.size || 'null'})">` : ''}
+                        <span class="file-icon">${icon}</span>
+                        <span class="file-name">${file.name}</span>
+                        <span class="file-size">${sizeText}</span>
+                    </div>
+                `;
+            }
+            
+            fileList.innerHTML = html;
+        }
+        
+        function handleFileClick(path, isDir, event) {
+            if (event.target.type === 'checkbox') {
+                return; // Checkbox handles its own logic
+            }
+            
+            if (isDir && path !== '..') {
+                loadFiles(path);
+            }
+        }
+        
+        function toggleStaged(path, name, isDir, size) {
+            if (stagedFiles.has(path)) {
+                stagedFiles.delete(path);
+            } else {
+                stagedFiles.set(path, {
+                    name: name,
+                    path: path,
+                    is_dir: isDir,
+                    size: size
+                });
+            }
+            
+            renderStagedFiles();
+            updateGenerateButton();
+            
+            // Update the file list to reflect selection
+            loadFiles(currentPath);
+        }
+        
+        function renderStagedFiles() {
+            const stagedContainer = document.getElementById('stagedFiles');
+            
+            if (stagedFiles.size === 0) {
+                stagedContainer.innerHTML = '<div class="loading">No files staged</div>';
+                return;
+            }
+            
+            let html = '';
+            for (const [path, file] of stagedFiles) {
+                const icon = file.is_dir ? '📁' : '📄';
+                const sizeText = file.size ? formatBytes(file.size) : '';
+                
+                html += `
+                    <div class="staged-item">
+                        <span class="file-icon">${icon}</span>
+                        <span class="staged-name">${file.name} ${sizeText}</span>
+                        <button class="remove-btn" onclick="removeStaged('${path}')">Remove</button>
+                    </div>
+                `;
+            }
+            
+            stagedContainer.innerHTML = html;
+        }
+        
+        function removeStaged(path) {
+            stagedFiles.delete(path);
+            renderStagedFiles();
+            updateGenerateButton();
+            loadFiles(currentPath); // Refresh to update checkboxes
+        }
+        
+        function clearStaged() {
+            stagedFiles.clear();
+            renderStagedFiles();
+            updateGenerateButton();
+            loadFiles(currentPath); // Refresh to update checkboxes
+        }
+        
+        function updateGenerateButton() {
+            const generateBtn = document.getElementById('generateBtn');
+            generateBtn.disabled = stagedFiles.size === 0;
+        }
+        
+        async function generateStagedLink() {
+            if (stagedFiles.size === 0) {
+                return;
+            }
+            
+            const generateBtn = document.getElementById('generateBtn');
+            generateBtn.disabled = true;
+            generateBtn.textContent = 'Generating...';
+            
+            try {
+                const paths = Array.from(stagedFiles.keys());
+                const customName = document.getElementById('downloadName').value.trim();
+                
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        paths: paths,
+                        name: customName || null
+                    }),
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to generate link');
+                }
+                
+                const result = await response.json();
+                
+                // Clear staged files and form
+                clearStaged();
+                document.getElementById('downloadName').value = '';
+                
+                // Show success message
+                showMessage('Download link generated successfully!', 'success');
+                
+                // Refresh token list
+                loadTokens();
+                
+            } catch (error) {
+                showMessage('Error generating link: ' + error.message, 'error');
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'Generate Download Link';
+                updateGenerateButton();
+            }
+        }
+        
+        async function loadTokens() {
+            try {
+                const response = await fetch('/api/tokens');
+                const tokens = await response.json();
+                renderTokens(tokens);
+            } catch (error) {
+                document.getElementById('tokenList').innerHTML = 
+                    '<div class="error">Error loading tokens: ' + error.message + '</div>';
+            }
+        }
+        
+        function renderTokens(tokens) {
+            const tokenList = document.getElementById('tokenList');
+            
+            if (tokens.length === 0) {
+                tokenList.innerHTML = '<div class="loading">No download links generated yet</div>';
+                return;
+            }
+            
+            let html = '';
+            for (const token of tokens) {
+                const status = token.downloaded ? 'used' : 'active';
+                const statusClass = token.downloaded ? 'status-used' : 'status-active';
+                const statusText = token.downloaded ? 'Used' : 'Active';
+                
+                html += `
+                    <div class="token-item">
+                        <div class="token-header">
+                            <span class="token-name">${token.name}</span>
+                            <span class="token-status ${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="token-url">${token.download_url || 'N/A'}</div>
+                        <button class="copy-btn" onclick="copyToClipboard('${token.download_url || ''}')">Copy Link</button>
+                    </div>
+                `;
+            }
+            
+            tokenList.innerHTML = html;
+        }
+        
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showMessage('Link copied to clipboard!', 'success');
+            }).catch(() => {
+                showMessage('Failed to copy link', 'error');
+            });
+        }
+        
+        function showMessage(message, type) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = type;
+            messageDiv.textContent = message;
+            messageDiv.style.position = 'fixed';
+            messageDiv.style.top = '20px';
+            messageDiv.style.right = '20px';
+            messageDiv.style.zIndex = '1000';
+            messageDiv.style.padding = '10px 15px';
+            messageDiv.style.borderRadius = '4px';
+            
+            document.body.appendChild(messageDiv);
+            
+            setTimeout(() => {
+                document.body.removeChild(messageDiv);
+            }, 3000);
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+        
+        // Initialize the app
+        loadFiles();
+        loadTokens();
+        
+        // Refresh tokens every 30 seconds
+        setInterval(loadTokens, 30000);
+    </script>
+</body>
+</html>
