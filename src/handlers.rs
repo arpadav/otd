@@ -466,14 +466,12 @@ impl Handler {
         // Check if already downloaded — use compare_exchange to atomically
         // claim the download in a single operation, preventing TOCTOU races
         // where two concurrent requests both read `false` before either writes `true`.
-        if self.state.one_time_enabled.load(Ordering::Acquire) {
-            if item
-                .downloaded
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
+        if self.state.one_time_enabled.load(Ordering::Acquire) && item
+            .downloaded
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
                 return Ok(HttpResponse::gone());
-            }
         }
 
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
