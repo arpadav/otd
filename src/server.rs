@@ -8,6 +8,70 @@ use crate::{config::Config, handlers::Handler, types::AppState};
 use smol::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 use std::{path::PathBuf, sync::Arc};
 
+/// Reads a complete HTTP request from `stream`.
+///
+/// Reads until the full request (headers + body) has been received, using
+/// the `Content-Length` header to determine when the body is complete.
+/// Returns an error if the total request size exceeds `max_bytes`.
+///
+/// # Returns
+///
+/// - `Ok(Some(data))` — complete request bytes
+/// - `Ok(None)` — connection closed before any data was sent
+/// - `Err(_)` — I/O error or request exceeded `max_bytes`
+async fn read_request<S>(stream: &mut S, max_bytes: usize) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>
+where
+    S: AsyncReadExt + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 4096];
+
+    loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            return Ok(if buf.is_empty() { None } else { Some(buf) });
+        }
+
+        if buf.len() + n > max_bytes {
+            return Err(format!("Request exceeds maximum size of {} bytes", max_bytes).into());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+
+        // Check if we have complete headers yet (look for \r\n\r\n)
+        if let Some(header_end) = find_header_end(&buf) {
+            // Parse Content-Length from the headers we have so far
+            let content_length = parse_content_length(&buf[..header_end]);
+            let body_received = buf.len().saturating_sub(header_end + 4);
+
+            if body_received >= content_length {
+                return Ok(Some(buf));
+            }
+            // Keep reading until we have the full body
+        }
+    }
+}
+
+/// Returns the byte offset of the end of HTTP headers (`\r\n\r\n`), or `None`.
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+/// Extracts the `Content-Length` value from raw HTTP headers.
+/// Returns 0 if the header is absent or unparseable (correct for GET/HEAD).
+fn parse_content_length(header_bytes: &[u8]) -> usize {
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
+    if req.parse(header_bytes).is_err() {
+        return 0;
+    }
+    req.headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("Content-Length"))
+        .and_then(|h| std::str::from_utf8(h.value).ok())
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
 /// Main server structure that manages both admin and download HTTP servers.
 ///
 /// The server runs two separate HTTP servers on different ports:
@@ -156,11 +220,10 @@ impl Server {
             let handler = handler.clone();
             
             smol::spawn(async move {
-                let mut buffer = vec![0; handler.config.buffer_size];
-                match stream.read(&mut buffer).await {
-                    Ok(n) if n > 0 => {
-                        let request_str = String::from_utf8_lossy(&buffer[..n]);
-                        
+                let max_bytes = handler.config.max_request_size;
+                match read_request(&mut stream, max_bytes).await {
+                    Ok(Some(bytes)) => {
+                        let request_str = String::from_utf8_lossy(&bytes);
                         match handler.handle_admin_request(&request_str).await {
                             Ok(response_bytes) => {
                                 if let Err(e) = stream.write_all(&response_bytes).await {
@@ -174,11 +237,15 @@ impl Server {
                             }
                         }
                     }
-                    Ok(_) => {
+                    Ok(None) => {
                         tracing::debug!("Empty admin request received");
                     }
                     Err(e) => {
-                        tracing::error!("Failed to read from admin stream: {}", e);
+                        tracing::warn!("Admin request read error (possible oversized request): {}", e);
+                        let response = crate::http::HttpResponse::new(413, "Payload Too Large")
+                            .body_text("Request too large")
+                            .to_bytes();
+                        let _ = stream.write_all(&response).await;
                     }
                 }
             }).detach();
@@ -211,11 +278,10 @@ impl Server {
             let handler = handler.clone();
             
             smol::spawn(async move {
-                let mut buffer = vec![0; handler.config.buffer_size];
-                match stream.read(&mut buffer).await {
-                    Ok(n) if n > 0 => {
-                        let request_str = String::from_utf8_lossy(&buffer[..n]);
-                        
+                let max_bytes = handler.config.max_request_size;
+                match read_request(&mut stream, max_bytes).await {
+                    Ok(Some(bytes)) => {
+                        let request_str = String::from_utf8_lossy(&bytes);
                         match handler.handle_download_request(&request_str).await {
                             Ok(response_bytes) => {
                                 if let Err(e) = stream.write_all(&response_bytes).await {
@@ -229,11 +295,15 @@ impl Server {
                             }
                         }
                     }
-                    Ok(_) => {
+                    Ok(None) => {
                         tracing::debug!("Empty download request received");
                     }
                     Err(e) => {
-                        tracing::error!("Failed to read from download stream: {}", e);
+                        tracing::warn!("Download request read error: {}", e);
+                        let response = crate::http::HttpResponse::new(413, "Payload Too Large")
+                            .body_text("Request too large")
+                            .to_bytes();
+                        let _ = stream.write_all(&response).await;
                     }
                 }
             }).detach();
@@ -263,5 +333,75 @@ mod tests {
         
         let download_addr = config.download_addr().unwrap();
         assert_eq!(download_addr.port(), 15205);
+    }
+
+    #[test]
+    fn test_find_header_end_found() {
+        // "GET / HTTP/1.1\r\nHost: x\r\n" is 26 bytes, \r\n\r\n starts at index 23
+        let data = b"GET / HTTP/1.1\r\nHost: x\r\n\r\nbody";
+        assert_eq!(find_header_end(data), Some(23));
+    }
+
+    #[test]
+    fn test_find_header_end_not_found() {
+        let data = b"GET / HTTP/1.1\r\nHost: x\r\n";
+        assert_eq!(find_header_end(data), None);
+    }
+
+    #[test]
+    fn test_parse_content_length_present() {
+        let headers = b"POST /api/generate HTTP/1.1\r\nContent-Length: 42\r\nHost: x\r\n\r\n";
+        assert_eq!(parse_content_length(headers), 42);
+    }
+
+    #[test]
+    fn test_parse_content_length_absent() {
+        let headers = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+        assert_eq!(parse_content_length(headers), 0);
+    }
+
+    #[test]
+    fn test_parse_content_length_case_insensitive() {
+        let headers = b"POST / HTTP/1.1\r\ncontent-length: 99\r\n\r\n";
+        assert_eq!(parse_content_length(headers), 99);
+    }
+
+    /// read_request should return the full request when Content-Length matches.
+    #[test]
+    fn test_read_request_complete_body() {
+        let body = b"{\"paths\":[\"file.txt\"]}";
+        let request = format!(
+            "POST /api/generate HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let mut cursor = smol::io::Cursor::new(request.as_bytes().to_vec());
+        let result = smol::block_on(read_request(&mut cursor, 65536)).unwrap();
+        assert!(result.is_some());
+        let data = result.unwrap();
+        assert!(data.ends_with(body));
+    }
+
+    /// read_request should return error when request exceeds max_bytes.
+    #[test]
+    fn test_read_request_exceeds_max() {
+        let large_body = vec![b'x'; 200];
+        let request = format!(
+            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            large_body.len(),
+            String::from_utf8(large_body).unwrap()
+        );
+        let mut cursor = smol::io::Cursor::new(request.as_bytes().to_vec());
+        // Set max to 100 bytes — smaller than the request
+        let result = smol::block_on(read_request(&mut cursor, 100));
+        assert!(result.is_err(), "Should error on oversized request");
+    }
+
+    /// read_request on empty stream returns None.
+    #[test]
+    fn test_read_request_empty_stream() {
+        let mut cursor = smol::io::Cursor::new(Vec::<u8>::new());
+        let result = smol::block_on(read_request(&mut cursor, 65536)).unwrap();
+        assert!(result.is_none());
     }
 }
