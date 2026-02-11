@@ -342,6 +342,24 @@
     </div>
 
     <script>
+        /**
+         * Escape a string for safe insertion into HTML.
+         * Replaces &, <, >, ", ' with their HTML entity equivalents.
+         * Always use this before interpolating user-controlled data into innerHTML.
+         *
+         * @param {string} str - The raw string to escape
+         * @returns {string} HTML-safe string
+         */
+        function escapeHtml(str) {
+            if (str == null) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#x27;');
+        }
+
         let currentPath = '';
         let stagedFiles = new Map();
         
@@ -361,21 +379,32 @@
         
         function updateBreadcrumb(path) {
             const breadcrumb = document.getElementById('breadcrumb');
-            if (!path) {
-                breadcrumb.textContent = 'Home';
-                return;
-            }
-            
+            breadcrumb.innerHTML = '';
+
+            // Home span — no user data, safe to set directly
+            const homeSpan = document.createElement('span');
+            homeSpan.textContent = 'Home';
+            homeSpan.style.cssText = 'cursor: pointer; color: #007acc;';
+            homeSpan.addEventListener('click', () => loadFiles(''));
+            breadcrumb.appendChild(homeSpan);
+
+            if (!path) return;
+
             const parts = path.split('/').filter(p => p);
-            let breadcrumbHtml = '<span onclick="loadFiles(\'\')" style="cursor: pointer; color: #007acc;">Home</span>';
-            
-            let currentPath = '';
+            let builtPath = '';
             for (const part of parts) {
-                currentPath += (currentPath ? '/' : '') + part;
-                breadcrumbHtml += ` / <span onclick="loadFiles('${currentPath}')" style="cursor: pointer; color: #007acc;">${part}</span>`;
+                builtPath += (builtPath ? '/' : '') + part;
+                const sep = document.createTextNode(' / ');
+                breadcrumb.appendChild(sep);
+
+                // Capture builtPath for the closure
+                const capturePath = builtPath;
+                const span = document.createElement('span');
+                span.textContent = part; // textContent is XSS-safe
+                span.style.cssText = 'cursor: pointer; color: #007acc;';
+                span.addEventListener('click', () => loadFiles(capturePath));
+                breadcrumb.appendChild(span);
             }
-            
-            breadcrumb.innerHTML = breadcrumbHtml;
         }
         
         function renderFiles(files) {
@@ -393,11 +422,11 @@
                 const isStaged = stagedFiles.has(file.path);
                 
                 html += `
-                    <div class="file-item ${isStaged ? 'selected' : ''}" onclick="handleFileClick('${file.path}', ${file.is_dir}, event)">
-                        ${file.name !== '..' ? `<input type="checkbox" class="file-checkbox" ${isStaged ? 'checked' : ''} onclick="event.stopPropagation(); toggleStaged('${file.path}', '${file.name}', ${file.is_dir}, ${file.size || 'null'})">` : ''}
+                    <div class="file-item ${isStaged ? 'selected' : ''}" data-path="${escapeHtml(file.path)}" data-isdir="${file.is_dir}">
+                        ${file.name !== '..' ? `<input type="checkbox" class="file-checkbox" ${isStaged ? 'checked' : ''} data-path="${escapeHtml(file.path)}" data-name="${escapeHtml(file.name)}" data-isdir="${file.is_dir}" data-size="${file.size || ''}">` : ''}
                         <span class="file-icon">${icon}</span>
-                        <span class="file-name">${file.name}</span>
-                        <span class="file-size">${sizeText}</span>
+                        <span class="file-name">${escapeHtml(file.name)}</span>
+                        <span class="file-size">${escapeHtml(sizeText)}</span>
                     </div>
                 `;
             }
@@ -405,6 +434,44 @@
             fileList.innerHTML = html;
         }
         
+        // Event delegation: single listener on file list handles all item clicks
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('tokenList').addEventListener('click', (event) => {
+                const btn = event.target.closest('.copy-btn');
+                if (btn) {
+                    copyToClipboard(btn.dataset.url);
+                }
+            });
+
+            document.getElementById('stagedFiles').addEventListener('click', (event) => {
+                const btn = event.target.closest('.remove-btn');
+                if (btn) {
+                    removeStaged(btn.dataset.path);
+                }
+            });
+
+            document.getElementById('fileList').addEventListener('click', (event) => {
+                const checkbox = event.target.closest('input[type="checkbox"]');
+                if (checkbox) {
+                    const path = checkbox.dataset.path;
+                    const name = checkbox.dataset.name;
+                    const isDir = checkbox.dataset.isdir === 'true';
+                    const size = checkbox.dataset.size ? parseInt(checkbox.dataset.size, 10) : null;
+                    toggleStaged(path, name, isDir, size);
+                    return;
+                }
+
+                const item = event.target.closest('.file-item');
+                if (item) {
+                    const path = item.dataset.path;
+                    const isDir = item.dataset.isdir === 'true';
+                    if (isDir && path !== '') {
+                        loadFiles(path);
+                    }
+                }
+            });
+        });
+
         function handleFileClick(path, isDir, event) {
             if (event.target.type === 'checkbox') {
                 return; // Checkbox handles its own logic
@@ -450,8 +517,8 @@
                 html += `
                     <div class="staged-item">
                         <span class="file-icon">${icon}</span>
-                        <span class="staged-name">${file.name} ${sizeText}</span>
-                        <button class="remove-btn" onclick="removeStaged('${path}')">Remove</button>
+                        <span class="staged-name">${escapeHtml(file.name)} ${escapeHtml(sizeText)}</span>
+                        <button class="remove-btn" data-path="${escapeHtml(path)}">Remove</button>
                     </div>
                 `;
             }
@@ -555,11 +622,11 @@
                 html += `
                     <div class="token-item">
                         <div class="token-header">
-                            <span class="token-name">${token.name}</span>
-                            <span class="token-status ${statusClass}">${statusText}</span>
+                            <span class="token-name">${escapeHtml(token.name)}</span>
+                            <span class="token-status ${statusClass}">${escapeHtml(statusText)}</span>
                         </div>
-                        <div class="token-url">${token.download_url || 'N/A'}</div>
-                        <button class="copy-btn" onclick="copyToClipboard('${token.download_url || ''}')">Copy Link</button>
+                        <div class="token-url">${escapeHtml(token.download_url || 'N/A')}</div>
+                        <button class="copy-btn" data-url="${escapeHtml(token.download_url || '')}">Copy Link</button>
                     </div>
                 `;
             }
