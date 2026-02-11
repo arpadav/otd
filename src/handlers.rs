@@ -97,6 +97,25 @@ impl Handler {
         
         match req.parse(request.as_bytes()) {
             Ok(_) => {
+                // Bearer token authentication — enforced when admin_token is configured.
+                if let Some(ref expected_token) = self.config.admin_token {
+                    let auth_header = req.headers.iter().find(|h| {
+                        h.name.eq_ignore_ascii_case("Authorization")
+                    });
+                    let authorized = auth_header
+                        .and_then(|h| std::str::from_utf8(h.value).ok())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                        .map(|token| token.trim() == expected_token.as_str())
+                        .unwrap_or(false);
+                    if !authorized {
+                        tracing::warn!("Admin request rejected: missing or invalid Authorization header");
+                        return Ok(HttpResponse::new(401, "Unauthorized")
+                            .header("WWW-Authenticate", "Bearer realm=\"otd-admin\"")
+                            .body_text("Unauthorized")
+                            .to_bytes());
+                    }
+                }
+
                 let method = req.method.unwrap_or("GET");
                 let path = req.path.unwrap_or("/");
                 
@@ -845,6 +864,55 @@ mod tests {
         let params = handler.parse_query("k=token123&path=folder%2Ffile");
         assert_eq!(params.get("k"), Some(&"token123".to_string()));
         assert_eq!(params.get("path"), Some(&"folder/file".to_string()));
+    }
+
+    fn make_handler_with_token(token: Option<&str>) -> Handler {
+        let mut config = Config::default();
+        config.admin_token = token.map(|t| t.to_string());
+        let state = Arc::new(AppState::new(PathBuf::from("/tmp")));
+        Handler::new(state, config)
+    }
+
+    /// When no token is configured, all admin requests are allowed.
+    #[test]
+    fn test_admin_auth_disabled_allows_all() {
+        let handler = make_handler_with_token(None);
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response_str = String::from_utf8_lossy(&response);
+        // Should NOT be 401
+        assert!(!response_str.contains("401 Unauthorized"), "Unexpected 401 when auth is disabled");
+    }
+
+    /// When token is configured, missing Authorization header returns 401.
+    #[test]
+    fn test_admin_auth_required_rejects_missing_header() {
+        let handler = make_handler_with_token(Some("secret123"));
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(response_str.contains("401 Unauthorized"));
+        assert!(response_str.contains("WWW-Authenticate"));
+    }
+
+    /// Wrong token returns 401.
+    #[test]
+    fn test_admin_auth_required_rejects_wrong_token() {
+        let handler = make_handler_with_token(Some("secret123"));
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrongtoken\r\n\r\n";
+        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(response_str.contains("401 Unauthorized"));
+    }
+
+    /// Correct token is accepted.
+    #[test]
+    fn test_admin_auth_required_accepts_correct_token() {
+        let handler = make_handler_with_token(Some("secret123"));
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret123\r\n\r\n";
+        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(!response_str.contains("401 Unauthorized"), "Correct token should be accepted");
     }
 
     /// safe_join with a normal relative path returns the canonical path.

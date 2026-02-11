@@ -110,6 +110,13 @@ impl Server {
         tracing::info!("Download server listening on {}", download_addr);
         tracing::info!("Base path: {}", self.config.base_path);
 
+        if self.config.admin_token.is_none() {
+            tracing::warn!(
+                "Admin interface has NO authentication. \
+                 Set `admin_token` in otd-config.toml and bind to a trusted interface."
+            );
+        }
+
         // Start both servers concurrently
         let admin_handler = self.handler.clone();
         let download_handler = self.handler.clone();

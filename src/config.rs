@@ -28,7 +28,10 @@ pub struct Config {
     pub admin_port: u16,
     /// Port for the download server (file downloads only)
     pub download_port: u16,
-    /// Host/IP address for the admin interface
+    /// Host/IP address for the admin interface.
+    /// Defaults to `127.0.0.1` — intentionally localhost-only.
+    /// Set to `0.0.0.0` only if you are behind a trusted reverse proxy
+    /// that enforces its own authentication.
     pub admin_host: String,
     /// Host/IP address for the download server
     pub download_host: String,
@@ -44,6 +47,11 @@ pub struct Config {
     pub cert_path: Option<String>,
     /// Path to TLS private key file (required if HTTPS enabled)
     pub key_path: Option<String>,
+    /// Optional shared secret token for admin interface authentication.
+    /// When set, every admin request must include the header:
+    ///   `Authorization: Bearer <token>`
+    /// Leave `None` to disable authentication (only safe on localhost).
+    pub admin_token: Option<String>,
 }
 
 impl Default for Config {
@@ -72,7 +80,9 @@ impl Default for Config {
         Self {
             admin_port: 15204,
             download_port: 15205,
-            admin_host: "0.0.0.0".to_string(),
+            // Admin defaults to loopback — the admin interface has no auth
+            // by default and must not be exposed to the network unprotected.
+            admin_host: "127.0.0.1".to_string(),
             download_host: "0.0.0.0".to_string(),
             base_path: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -82,6 +92,7 @@ impl Default for Config {
             enable_https: false,
             cert_path: None,
             key_path: None,
+            admin_token: None,
         }
     }
 }
@@ -214,9 +225,12 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.admin_port, 15204);
         assert_eq!(config.download_port, 15205);
-        assert_eq!(config.admin_host, "0.0.0.0");
+        // Admin must default to loopback for safety.
+        assert_eq!(config.admin_host, "127.0.0.1");
         assert_eq!(config.download_host, "0.0.0.0");
         assert!(!config.enable_https);
+        // No token by default — users should set one if exposing over network.
+        assert!(config.admin_token.is_none());
     }
 
     #[test]
