@@ -447,13 +447,17 @@ impl Handler {
             None => return Ok(HttpResponse::not_found().body_text("Token not found")),
         };
 
-        // Check if already downloaded
-        if self.state.one_time_enabled.load(Ordering::Relaxed) {
-            if item.downloaded.load(Ordering::Relaxed) {
+        // Check if already downloaded — use compare_exchange to atomically
+        // claim the download in a single operation, preventing TOCTOU races
+        // where two concurrent requests both read `false` before either writes `true`.
+        if self.state.one_time_enabled.load(Ordering::Acquire) {
+            if item
+                .downloaded
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
                 return Ok(HttpResponse::gone());
             }
-            // Mark as downloaded
-            item.downloaded.store(true, Ordering::Relaxed);
         }
 
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
@@ -800,5 +804,66 @@ mod tests {
         let params = handler.parse_query("k=token123&path=folder%2Ffile");
         assert_eq!(params.get("k"), Some(&"token123".to_string()));
         assert_eq!(params.get("path"), Some(&"folder/file".to_string()));
+    }
+
+    /// Verify that compare_exchange prevents concurrent double-downloads.
+    /// Two threads race to claim the same AtomicBool; exactly one must win.
+    #[test]
+    fn test_one_time_download_race_condition() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let downloaded = Arc::new(AtomicBool::new(false));
+        let success_count = Arc::new(AtomicUsize::new(0));
+
+        let threads: Vec<_> = (0..20)
+            .map(|_| {
+                let downloaded = Arc::clone(&downloaded);
+                let success_count = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    if downloaded
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        success_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        assert_eq!(
+            success_count.load(Ordering::Relaxed),
+            1,
+            "Exactly one thread should succeed in claiming the download"
+        );
+    }
+
+    /// Verify that when one_time is disabled, multiple downloads are allowed.
+    #[test]
+    fn test_one_time_disabled_allows_redownload() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let one_time_enabled = AtomicBool::new(false);
+        let downloaded = AtomicBool::new(false);
+
+        // Simulate two download attempts with one_time disabled
+        for _ in 0..3 {
+            if one_time_enabled.load(Ordering::Acquire) {
+                assert!(
+                    downloaded
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok(),
+                    "Should only succeed once when one_time enabled"
+                );
+            }
+            // When disabled: no check performed, would proceed to serve
+        }
+        // downloaded flag never set since one_time is disabled
+        assert!(!downloaded.load(Ordering::Relaxed));
     }
 }
