@@ -59,7 +59,11 @@ impl Server {
     /// let server = Server::new(config);
     /// ```
     pub fn new(config: Config) -> Self {
-        let base_path = PathBuf::from(&config.base_path);
+        // Canonicalize base_path at startup so all subsequent path checks
+        // work against a resolved, symlink-free root. Fall back to the raw
+        // path if canonicalization fails (e.g., directory doesn't exist yet).
+        let raw_path = PathBuf::from(&config.base_path);
+        let base_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path);
         let state = Arc::new(AppState::new(base_path));
         let handler = Handler::new(state, config.clone());
         

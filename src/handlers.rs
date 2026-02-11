@@ -234,16 +234,18 @@ impl Handler {
         let full_path = if path.is_empty() {
             self.state.base_path.clone()
         } else {
-            self.state.base_path.join(path)
+            // safe_join canonicalizes and verifies containment, blocking both
+            // `../` traversal and symlink escapes.
+            match self.safe_join(path) {
+                Some(p) => p,
+                None => {
+                    tracing::warn!("Browse: path traversal/symlink escape blocked for '{path}'");
+                    return Ok(HttpResponse::forbidden());
+                }
+            }
         };
 
         tracing::info!("Browse request - path: '{path}', full_path: '{full_path:?}'");
-
-        // Security check: ensure path is within base_path
-        if !full_path.starts_with(&self.state.base_path) {
-            tracing::warn!("Path traversal attempt blocked: {full_path:?}");
-            return Ok(HttpResponse::forbidden());
-        }
 
         let mut items = Vec::new();
 
@@ -333,21 +335,16 @@ impl Handler {
 
         let mut full_paths = Vec::new();
         
-        // Validate all paths
+        // Validate all paths — safe_join canonicalizes and checks containment,
+        // blocking both `../` traversal and symlink-based escapes.
         for path_str in &generate_req.paths {
-            let full_path = self.state.base_path.join(path_str);
-            
-            // Security check
-            if !full_path.starts_with(&self.state.base_path) {
-                return Ok(HttpResponse::forbidden());
+            match self.safe_join(path_str) {
+                Some(full_path) => full_paths.push(full_path),
+                None => {
+                    tracing::warn!("Generate: path traversal/symlink escape blocked for '{path_str}'");
+                    return Ok(HttpResponse::forbidden());
+                }
             }
-
-            if !full_path.exists() {
-                tracing::error!("Path does not exist: {:?}", full_path);
-                return Ok(HttpResponse::not_found().body_text(&format!("Path not found: {path_str}")));
-            }
-            
-            full_paths.push(full_path);
         }
 
         let token = Uuid::new_v4().to_string();
@@ -657,6 +654,50 @@ impl Handler {
             .replace("{{DOWNLOAD_PORT}}", &self.config.download_port.to_string())
     }
 
+    /// Safely joins `relative` onto `base_path` and verifies the resolved path
+    /// is still within `base_path` after canonicalization.
+    ///
+    /// This prevents both classic `../` path traversal and symlink-based escapes,
+    /// since `canonicalize()` resolves all symlinks before the containment check.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if:
+    /// - The joined path does not exist on disk (can't canonicalize a non-existent path)
+    /// - The canonicalized path escapes `base_path`
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use otd::{Handler, Config, types::AppState};
+    /// # use std::{sync::Arc, path::PathBuf};
+    /// # let config = Config::default();
+    /// # let state = Arc::new(AppState::new(PathBuf::from("/files")));
+    /// # let handler = Handler::new(state, config);
+    /// // Safe path — returns Some(canonical_path)
+    /// let ok = handler.safe_join("subdir/file.txt");
+    /// // Traversal — returns None
+    /// let bad = handler.safe_join("../../etc/passwd");
+    /// assert!(bad.is_none());
+    /// ```
+    pub fn safe_join(&self, relative: &str) -> Option<PathBuf> {
+        let joined = self.state.base_path.join(relative);
+        // canonicalize resolves symlinks and `..` components; if the path
+        // doesn't exist it returns an error, which we propagate as None.
+        let canonical = std::fs::canonicalize(&joined).ok()?;
+        if canonical.starts_with(&self.state.base_path) {
+            Some(canonical)
+        } else {
+            tracing::warn!(
+                "Path escape blocked: '{}' resolves to '{:?}' outside base '{:?}'",
+                relative,
+                canonical,
+                self.state.base_path
+            );
+            None
+        }
+    }
+
     /// Parses URL query string into key-value pairs.
     ///
     /// # Arguments
@@ -804,6 +845,69 @@ mod tests {
         let params = handler.parse_query("k=token123&path=folder%2Ffile");
         assert_eq!(params.get("k"), Some(&"token123".to_string()));
         assert_eq!(params.get("path"), Some(&"folder/file".to_string()));
+    }
+
+    /// safe_join with a normal relative path returns the canonical path.
+    #[test]
+    fn test_safe_join_valid_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, b"hello").unwrap();
+
+        let config = Config::default();
+        let state = Arc::new(AppState::new(dir.path().to_path_buf()));
+        let handler = Handler::new(state, config);
+
+        let result = handler.safe_join("file.txt");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), file.canonicalize().unwrap());
+    }
+
+    /// safe_join must block `../` path traversal.
+    #[test]
+    fn test_safe_join_blocks_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let state = Arc::new(AppState::new(dir.path().to_path_buf()));
+        let handler = Handler::new(state, config);
+
+        // Non-existent traversal path — canonicalize fails → None
+        assert!(handler.safe_join("../../../etc/passwd").is_none());
+    }
+
+    /// safe_join must block symlinks that point outside base_path.
+    #[test]
+    fn test_safe_join_blocks_symlink_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let link_path = dir.path().join("evil_link");
+        // Create symlink inside base_path → /etc/passwd outside base_path
+        std::os::unix::fs::symlink("/etc/passwd", &link_path).unwrap();
+
+        let config = Config::default();
+        let state = Arc::new(AppState::new(dir.path().to_path_buf()));
+        let handler = Handler::new(state, config);
+
+        // Must be blocked — /etc/passwd is outside the base dir
+        assert!(handler.safe_join("evil_link").is_none());
+    }
+
+    /// safe_join must allow symlinks that resolve within base_path.
+    #[test]
+    fn test_safe_join_allows_internal_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real_file = dir.path().join("real.txt");
+        std::fs::write(&real_file, b"data").unwrap();
+        let link_path = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&real_file, &link_path).unwrap();
+
+        let config = Config::default();
+        let state = Arc::new(AppState::new(dir.path().to_path_buf()));
+        let handler = Handler::new(state, config);
+
+        // Should succeed — symlink resolves within base_path
+        let result = handler.safe_join("link.txt");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), real_file.canonicalize().unwrap());
     }
 
     /// Verify that compare_exchange prevents concurrent double-downloads.

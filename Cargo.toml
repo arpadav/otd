@@ -19,3 +19,4 @@ serde = { version = "~1.0", features = ["derive"] }
 [dev-dependencies]
 smol-macros = "~0.1"
 macro_rules_attribute = "~0.2"
+tempfile = "~3.14"
