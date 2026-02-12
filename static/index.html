@@ -65,6 +65,27 @@
                             <label for="downloadName" class="block text-xs font-medium text-text-muted mb-1">Download name <span class="text-text-muted/60">(optional)</span></label>
                             <input type="text" id="downloadName" placeholder="Auto-generated if empty" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all placeholder:text-text-muted/50">
                         </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label for="maxDownloads" class="block text-xs font-medium text-text-muted mb-1">Max downloads</label>
+                                <input type="number" id="maxDownloads" value="1" min="1" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all">
+                            </div>
+                            <div>
+                                <label for="expiresAfter" class="block text-xs font-medium text-text-muted mb-1">Expires after</label>
+                                <select id="expiresAfter" onchange="toggleCustomExpiry()" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all">
+                                    <option value="">Never</option>
+                                    <option value="3600">1 hour</option>
+                                    <option value="21600">6 hours</option>
+                                    <option value="86400">24 hours</option>
+                                    <option value="604800">1 week</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="customExpiryWrap" class="hidden">
+                            <label for="customExpiry" class="block text-xs font-medium text-text-muted mb-1">Custom expiry</label>
+                            <input type="datetime-local" id="customExpiry" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all">
+                        </div>
                         <button id="generateBtn" onclick="generateStagedLink()" disabled class="w-full py-2.5 px-4 text-sm font-medium rounded-lg bg-accent text-white hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2">
                             Generate Download Link
                         </button>
@@ -246,6 +267,22 @@
         function clearStaged() { stagedFiles.clear(); renderStagedFiles(); updateGenerateButton(); loadFiles(currentPath); }
         function updateGenerateButton() { document.getElementById('generateBtn').disabled = stagedFiles.size === 0; }
 
+        function toggleCustomExpiry() {
+            document.getElementById('customExpiryWrap').classList.toggle('hidden', document.getElementById('expiresAfter').value !== 'custom');
+        }
+
+        function getExpiresInSeconds() {
+            const sel = document.getElementById('expiresAfter').value;
+            if (!sel) return null;
+            if (sel === 'custom') {
+                const dt = document.getElementById('customExpiry').value;
+                if (!dt) return null;
+                const secs = Math.floor((new Date(dt).getTime() - Date.now()) / 1000);
+                return secs > 0 ? secs : null;
+            }
+            return parseInt(sel);
+        }
+
         // --- Generate Link ---
         async function generateStagedLink() {
             if (!stagedFiles.size) return;
@@ -255,14 +292,21 @@
             try {
                 const paths = Array.from(stagedFiles.keys());
                 const customName = document.getElementById('downloadName').value.trim();
+                const maxDownloads = parseInt(document.getElementById('maxDownloads').value) || 1;
+                const expiresIn = getExpiresInSeconds();
+                const body = { paths, name: customName || null, max_downloads: maxDownloads };
+                if (expiresIn) body.expires_in_seconds = expiresIn;
                 const res = await fetch('/api/generate', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ paths, name: customName || null })
+                    body: JSON.stringify(body)
                 });
                 if (!res.ok) throw new Error('Failed to generate link');
                 clearStaged();
                 document.getElementById('downloadName').value = '';
+                document.getElementById('maxDownloads').value = '1';
+                document.getElementById('expiresAfter').value = '';
+                toggleCustomExpiry();
                 toast('Download link generated!');
                 loadTokens();
             } catch (e) {
@@ -285,18 +329,37 @@
             }
         }
 
+        function formatExpiry(t) {
+            if (t.expired) return 'Expired';
+            if (t.expires_in_seconds == null) return 'No expiry';
+            const s = t.expires_in_seconds;
+            if (s < 3600) return `Expires in ${Math.ceil(s/60)}m`;
+            if (s < 86400) return `Expires in ${Math.floor(s/3600)}h`;
+            return `Expires in ${Math.floor(s/86400)}d`;
+        }
+
         function renderTokens(tokens) {
             const container = document.getElementById('tokenList');
             if (!tokens.length) { container.innerHTML = '<div class="text-center text-text-muted text-sm py-8">No links generated yet</div>'; return; }
 
             let html = '';
             for (const t of tokens) {
-                const used = t.downloaded;
-                html += `<div class="rounded-lg border ${used ? 'border-border bg-surface-alt/50' : 'border-accent/20 bg-accent/5'} p-3 space-y-2">
+                const exhausted = t.remaining_downloads <= 0;
+                const dead = t.expired || exhausted;
+                const dlInfo = oneTimeEnabled
+                    ? `${t.remaining_downloads} of ${t.max_downloads} remaining`
+                    : 'Unlimited';
+                html += `<div class="rounded-lg border ${dead ? 'border-border bg-surface-alt/50' : 'border-accent/20 bg-accent/5'} p-3 space-y-2">
                     <div class="flex items-center justify-between">
-                        <span class="text-sm font-semibold ${used ? 'text-text-muted line-through' : 'text-text'}">${escapeHtml(t.name)}</span>
-                        <span class="text-xs font-medium px-2 py-0.5 rounded-full ${used ? 'bg-danger-bg text-red-700' : 'bg-success-bg text-emerald-700'}">${used ? 'Used' : 'Active'}</span>
+                        <span class="text-sm font-semibold ${dead ? 'text-text-muted line-through' : 'text-text'}">${escapeHtml(t.name)}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs font-medium px-2 py-0.5 rounded-full ${dead ? 'bg-danger-bg text-red-700' : 'bg-success-bg text-emerald-700'}">${dead ? 'Exhausted' : 'Active'}</span>
+                            <button data-token="${escapeHtml(t.token)}" class="delete-token-btn text-text-muted hover:text-danger transition-colors p-1 rounded hover:bg-danger-bg" title="Remove token">
+                                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+                            </button>
+                        </div>
                     </div>
+                    <div class="text-xs text-text-muted">${escapeHtml(dlInfo)} · ${escapeHtml(formatExpiry(t))}</div>
                     <div class="font-mono text-xs bg-brand/5 rounded px-2.5 py-1.5 break-all text-text-muted select-all">${escapeHtml(t.download_url || 'N/A')}</div>
                     <button data-url="${escapeHtml(t.download_url || '')}" class="copy-btn inline-flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover transition-colors">
                         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/></svg>
@@ -305,6 +368,14 @@
                 </div>`;
             }
             container.innerHTML = html;
+        }
+
+        async function deleteToken(token) {
+            try {
+                const res = await fetch(`/api/tokens/${encodeURIComponent(token)}`, { method: 'DELETE' });
+                if (res.ok) { toast('Token removed'); loadTokens(); }
+                else toast('Failed to remove token', 'error');
+            } catch (e) { toast('Error: ' + e.message, 'error'); }
         }
 
         function copyToClipboard(text) {
@@ -320,8 +391,10 @@
                 if (item && item.dataset.isdir === 'true') loadFiles(item.dataset.path);
             });
             document.getElementById('tokenList').addEventListener('click', (e) => {
-                const btn = e.target.closest('.copy-btn');
-                if (btn) copyToClipboard(btn.dataset.url);
+                const copyBtn = e.target.closest('.copy-btn');
+                if (copyBtn) { copyToClipboard(copyBtn.dataset.url); return; }
+                const delBtn = e.target.closest('.delete-token-btn');
+                if (delBtn) deleteToken(delBtn.dataset.token);
             });
             document.getElementById('stagedFiles').addEventListener('click', (e) => {
                 const btn = e.target.closest('.remove-btn');

@@ -137,6 +137,10 @@ impl Handler {
                         self.generate_link(&body).await?
                     },
                     ("GET", "/api/tokens") => self.list_tokens().await?,
+                    ("DELETE", path) if path.starts_with("/api/tokens/") => {
+                        let token = path.strip_prefix("/api/tokens/").unwrap_or("");
+                        self.delete_token(token).await?
+                    }
                     ("GET", path) if path.starts_with("/config/one-time/") => {
                         let enabled = path.strip_prefix("/config/one-time/")
                             .and_then(|s| s.parse::<bool>().ok())
@@ -383,11 +387,19 @@ impl Handler {
             "output.zip".to_string()
         };
 
+        let max_downloads = generate_req.max_downloads.unwrap_or(1).max(1);
+        let expires_at = generate_req.expires_in_seconds.map(|secs| {
+            std::time::Instant::now() + std::time::Duration::from_secs(secs)
+        });
+
         let item = DownloadItem {
             paths: full_paths,
             is_multi_file,
-            downloaded: std::sync::atomic::AtomicBool::new(false),
             name: name.clone(),
+            max_downloads,
+            download_count: std::sync::atomic::AtomicU32::new(0),
+            expires_at,
+            created_at: std::time::Instant::now(),
         };
 
         self.state.tokens.write().await.insert(token.clone(), item);
@@ -417,14 +429,24 @@ impl Handler {
         let tokens = self.state.tokens.read().await;
         let mut items = Vec::new();
 
+        let now = std::time::Instant::now();
         for (token, item) in tokens.iter() {
             let download_url = format!("{}/{}?k={}", self.config.download_base_url(), 
                                      self.url_encode(&item.name), token);
+            let count = item.download_count.load(Ordering::Relaxed);
+            let expired = item.expires_at.map(|e| now >= e).unwrap_or(false);
+            let expires_in_seconds = item.expires_at.and_then(|e| {
+                if now < e { Some(e.duration_since(now).as_secs()) } else { None }
+            });
             items.push(serde_json::json!({
                 "token": token,
                 "name": item.name,
                 "is_multi_file": item.is_multi_file,
-                "downloaded": item.downloaded.load(Ordering::Relaxed),
+                "download_count": count,
+                "max_downloads": item.max_downloads,
+                "remaining_downloads": item.max_downloads.saturating_sub(count),
+                "expired": expired,
+                "expires_in_seconds": expires_in_seconds,
                 "download_url": download_url,
                 "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()
             }));
@@ -433,23 +455,20 @@ impl Handler {
         HttpResponse::ok().body_json(&items).map_err(Into::into)
     }
 
+    /// Deletes a download token.
+    async fn delete_token(&self, token: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tokens = self.state.tokens.write().await;
+        if tokens.remove(token).is_some() {
+            tracing::info!("Deleted token: {}", token);
+            Ok(HttpResponse::ok()
+                .content_type(content_type::JSON)
+                .body_text("{\"removed\":true}"))
+        } else {
+            Ok(HttpResponse::not_found().body_text("{\"removed\":false}"))
+        }
+    }
+
     /// Handles file download requests using the provided token.
-    ///
-    /// Validates the token, checks one-time usage rules, and serves the file(s).
-    /// Supports both single file downloads and multi-file ZIP downloads.
-    ///
-    /// # Arguments
-    ///
-    /// * `query` - URL query string containing the token parameter
-    ///
-    /// # Returns
-    ///
-    /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - File content or error
-    ///
-    /// # One-Time Usage
-    ///
-    /// If one-time usage is enabled, the download token is marked as used
-    /// after the first successful download attempt.
     async fn download(&self, query: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let params = self.parse_query(query);
         let token = match params.get("k") {
@@ -463,15 +482,20 @@ impl Handler {
             None => return Ok(HttpResponse::not_found().body_text("Token not found")),
         };
 
-        // Check if already downloaded — use compare_exchange to atomically
-        // claim the download in a single operation, preventing TOCTOU races
-        // where two concurrent requests both read `false` before either writes `true`.
-        if self.state.one_time_enabled.load(Ordering::Acquire) && item
-            .downloaded
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-                return Ok(HttpResponse::gone());
+        // Check expiry (always, regardless of one_time_enabled)
+        if let Some(expires_at) = item.expires_at {
+            if std::time::Instant::now() >= expires_at {
+                return Ok(HttpResponse::gone().body_text("Download link has expired"));
+            }
+        }
+
+        // Check download count (only when one_time mode is enabled)
+        if self.state.one_time_enabled.load(Ordering::Acquire) {
+            let prev = item.download_count.fetch_add(1, Ordering::AcqRel);
+            if prev >= item.max_downloads {
+                item.download_count.fetch_sub(1, Ordering::AcqRel);
+                return Ok(HttpResponse::gone().body_text("Download limit reached"));
+            }
         }
 
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
@@ -979,27 +1003,28 @@ mod tests {
         assert_eq!(result.unwrap(), real_file.canonicalize().unwrap());
     }
 
-    /// Verify that compare_exchange prevents concurrent double-downloads.
-    /// Two threads race to claim the same AtomicBool; exactly one must win.
+    /// Verify that fetch_add prevents concurrent over-downloads.
+    /// With max_downloads=3, exactly 3 of 20 threads should succeed.
     #[test]
     fn test_one_time_download_race_condition() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
         use std::sync::Arc;
         use std::thread;
 
-        let downloaded = Arc::new(AtomicBool::new(false));
+        let download_count = Arc::new(AtomicU32::new(0));
+        let max_downloads: u32 = 3;
         let success_count = Arc::new(AtomicUsize::new(0));
 
         let threads: Vec<_> = (0..20)
             .map(|_| {
-                let downloaded = Arc::clone(&downloaded);
+                let download_count = Arc::clone(&download_count);
                 let success_count = Arc::clone(&success_count);
                 thread::spawn(move || {
-                    if downloaded
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                    {
+                    let prev = download_count.fetch_add(1, Ordering::AcqRel);
+                    if prev < max_downloads {
                         success_count.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        download_count.fetch_sub(1, Ordering::AcqRel);
                     }
                 })
             })
@@ -1011,32 +1036,29 @@ mod tests {
 
         assert_eq!(
             success_count.load(Ordering::Relaxed),
-            1,
-            "Exactly one thread should succeed in claiming the download"
+            3,
+            "Exactly max_downloads threads should succeed"
         );
     }
 
     /// Verify that when one_time is disabled, multiple downloads are allowed.
     #[test]
     fn test_one_time_disabled_allows_redownload() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
         let one_time_enabled = AtomicBool::new(false);
-        let downloaded = AtomicBool::new(false);
+        let download_count = AtomicU32::new(0);
+        let max_downloads: u32 = 1;
 
-        // Simulate two download attempts with one_time disabled
-        for _ in 0..3 {
+        // Simulate 5 download attempts with one_time disabled
+        for _ in 0..5 {
             if one_time_enabled.load(Ordering::Acquire) {
-                assert!(
-                    downloaded
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok(),
-                    "Should only succeed once when one_time enabled"
-                );
+                let prev = download_count.fetch_add(1, Ordering::AcqRel);
+                assert!(prev < max_downloads, "Should not exceed max when enabled");
             }
-            // When disabled: no check performed, would proceed to serve
+            // When disabled: download count check is skipped
         }
-        // downloaded flag never set since one_time is disabled
-        assert!(!downloaded.load(Ordering::Relaxed));
+        // download_count should be 0 since one_time is disabled
+        assert_eq!(download_count.load(Ordering::Relaxed), 0);
     }
 }
