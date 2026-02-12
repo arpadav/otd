@@ -4,7 +4,7 @@
 //! including download items, request/response types, and shared application state.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicBool};
+use std::{collections::HashMap, path::PathBuf, sync::atomic::{AtomicBool, AtomicU32}};
 use smol::lock::RwLock;
 
 /// Represents a downloadable item with one or more files/folders.
@@ -12,30 +12,15 @@ use smol::lock::RwLock;
 /// Each download item is associated with a unique token and can contain
 /// multiple paths that will be served as a single download (ZIP for multiple items).
 ///
-/// # Examples
-///
-/// ```rust
-/// use otd::types::DownloadItem;
-/// use std::path::PathBuf;
-/// use std::sync::atomic::AtomicBool;
-///
-/// let item = DownloadItem {
-///     paths: vec![PathBuf::from("/path/to/file.txt")],
-///     is_multi_file: false,
-///     downloaded: AtomicBool::new(false),
-///     name: "file.txt".to_string(),
-/// };
-/// ```
 #[derive(Debug)]
 pub struct DownloadItem {
-    /// List of file/folder paths to include in this download
     pub paths: Vec<PathBuf>,
-    /// Whether this download contains multiple files (affects ZIP behavior)
     pub is_multi_file: bool,
-    /// Atomic flag tracking if this item has been downloaded (for one-time use)
-    pub downloaded: AtomicBool,
-    /// Display name for the download (used in filename and UI)
     pub name: String,
+    pub max_downloads: u32,
+    pub download_count: AtomicU32,
+    pub expires_at: Option<std::time::Instant>,
+    pub created_at: std::time::Instant,
 }
 
 /// Query parameters for download requests.
@@ -73,10 +58,10 @@ pub struct DownloadQuery {
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
-    /// List of relative paths (from base_path) to include in the download
     pub paths: Vec<String>,
-    /// Optional custom name for the download (auto-generated if None)
     pub name: Option<String>,
+    pub max_downloads: Option<u32>,
+    pub expires_in_seconds: Option<u64>,
 }
 
 /// Represents a file or folder in the file browser.
@@ -177,6 +162,8 @@ pub struct AppState {
     pub one_time_enabled: AtomicBool,
     /// Base directory path for file serving
     pub base_path: PathBuf,
+    /// Active login sessions: token → creation time
+    pub sessions: RwLock<HashMap<String, std::time::Instant>>,
 }
 
 impl AppState {
@@ -200,6 +187,7 @@ impl AppState {
             tokens: RwLock::new(HashMap::new()),
             one_time_enabled: AtomicBool::new(true),
             base_path,
+            sessions: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -223,14 +211,18 @@ mod tests {
         let item = DownloadItem {
             paths: vec![PathBuf::from("test.txt")],
             is_multi_file: false,
-            downloaded: AtomicBool::new(false),
             name: "test.txt".to_string(),
+            max_downloads: 3,
+            download_count: AtomicU32::new(0),
+            expires_at: None,
+            created_at: std::time::Instant::now(),
         };
         
         assert_eq!(item.paths.len(), 1);
         assert!(!item.is_multi_file);
-        assert!(!item.downloaded.load(Ordering::Relaxed));
+        assert_eq!(item.download_count.load(Ordering::Relaxed), 0);
         assert_eq!(item.name, "test.txt");
+        assert_eq!(item.max_downloads, 3);
     }
 
     #[test]

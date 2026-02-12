@@ -52,6 +52,10 @@ pub struct Config {
     ///   `Authorization: Bearer <token>`
     /// Leave `None` to disable authentication (only safe on localhost).
     pub admin_token: Option<String>,
+    /// Optional password for admin interface login from non-loopback addresses.
+    /// When set, external (non-127.0.0.1/::1) requests must authenticate via
+    /// a login form. When `None`, external requests receive a 403 error.
+    pub admin_password: Option<String>,
 }
 
 impl Default for Config {
@@ -94,6 +98,7 @@ impl Default for Config {
             cert_path: None,
             key_path: None,
             admin_token: None,
+            admin_password: None,
         }
     }
 }

@@ -216,7 +216,7 @@ impl Server {
         let listener = TcpListener::bind(addr).await?;
         
         loop {
-            let (mut stream, _) = listener.accept().await?;
+            let (mut stream, peer_addr) = listener.accept().await?;
             let handler = handler.clone();
             
             smol::spawn(async move {
@@ -224,7 +224,7 @@ impl Server {
                 match read_request(&mut stream, max_bytes).await {
                     Ok(Some(bytes)) => {
                         let request_str = String::from_utf8_lossy(&bytes);
-                        match handler.handle_admin_request(&request_str).await {
+                        match handler.handle_admin_request(&request_str, peer_addr).await {
                             Ok(response_bytes) => {
                                 if let Err(e) = stream.write_all(&response_bytes).await {
                                     tracing::error!("Failed to write admin response: {}", e);

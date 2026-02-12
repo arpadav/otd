@@ -88,10 +88,11 @@ impl Handler {
     /// # let handler = Handler::new(state, config);
     /// # smol::block_on(async {
     /// let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    /// let response = handler.handle_admin_request(request).await.unwrap();
+    /// let peer_addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
+    /// let response = handler.handle_admin_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_admin_request(&self, request: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn handle_admin_request(&self, request: &str, peer_addr: std::net::SocketAddr) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
         
@@ -129,6 +130,91 @@ impl Handler {
 
                 tracing::info!("Parsed path: '{}', query: '{}'", path, query);
 
+                // --- Loopback / session auth ---
+                let is_loopback = peer_addr.ip().is_loopback();
+                if !is_loopback {
+                    // Check if admin_password is configured
+                    if self.config.admin_password.is_none() {
+                        let html = include_str!("../static/login.html")
+                            .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"))
+                            .replace("{{MESSAGE}}", "External access requires admin_password to be set in config.");
+                        return Ok(HttpResponse::new(403, "Forbidden")
+                            .content_type(content_type::HTML)
+                            .body_text(&html)
+                            .to_bytes());
+                    }
+
+                    // Allow login routes without session
+                    let is_login_route = path == "/login";
+                    if !is_login_route {
+                        // Check session cookie
+                        let cookie_header = req.headers.iter()
+                            .find(|h| h.name.eq_ignore_ascii_case("Cookie"))
+                            .and_then(|h| std::str::from_utf8(h.value).ok())
+                            .unwrap_or("");
+                        
+                        let session_token = cookie_header.split(';')
+                            .map(|s| s.trim())
+                            .find(|s| s.starts_with("otd_session="))
+                            .and_then(|s| s.strip_prefix("otd_session="));
+
+                        let mut valid_session = false;
+                        if let Some(token) = session_token {
+                            let sessions = self.state.sessions.read().await;
+                            if let Some(created) = sessions.get(token) {
+                                if created.elapsed() < std::time::Duration::from_secs(24 * 60 * 60) {
+                                    valid_session = true;
+                                }
+                            }
+                        }
+
+                        // Clean up expired sessions (best-effort, don't block)
+                        if !valid_session {
+                            let mut sessions = self.state.sessions.write().await;
+                            let max_age = std::time::Duration::from_secs(24 * 60 * 60);
+                            sessions.retain(|_, created| created.elapsed() < max_age);
+                        }
+
+                        if !valid_session {
+                            return Ok(HttpResponse::redirect("/login").to_bytes());
+                        }
+                    }
+                }
+
+                // --- Login routes ---
+                if path == "/login" {
+                    if method == "GET" {
+                        let html = include_str!("../static/login.html")
+                            .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"))
+                            .replace("{{MESSAGE}}", "");
+                        return Ok(HttpResponse::ok()
+                            .content_type(content_type::HTML)
+                            .body_text(&html)
+                            .to_bytes());
+                    } else if method == "POST" {
+                        let body = self.extract_body(request)?;
+                        let params = self.parse_query(&body);
+                        let password = params.get("password").cloned().unwrap_or_default();
+                        
+                        let expected = self.config.admin_password.as_deref().unwrap_or("");
+                        if !expected.is_empty() && password == expected {
+                            let token = Uuid::new_v4().to_string();
+                            self.state.sessions.write().await.insert(token.clone(), std::time::Instant::now());
+                            return Ok(HttpResponse::redirect("/")
+                                .header("Set-Cookie", &format!("otd_session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400", token))
+                                .to_bytes());
+                        } else {
+                            let html = include_str!("../static/login.html")
+                                .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"))
+                                .replace("{{MESSAGE}}", "Invalid password.");
+                            return Ok(HttpResponse::new(403, "Forbidden")
+                                .content_type(content_type::HTML)
+                                .body_text(&html)
+                                .to_bytes());
+                        }
+                    }
+                }
+
                 let response = match (method, path) {
                     ("GET", "/") => self.web_interface().await?,
                     ("GET", "/api/browse") => self.browse(query).await?,
@@ -137,6 +223,10 @@ impl Handler {
                         self.generate_link(&body).await?
                     },
                     ("GET", "/api/tokens") => self.list_tokens().await?,
+                    ("DELETE", path) if path.starts_with("/api/tokens/") => {
+                        let token = path.strip_prefix("/api/tokens/").unwrap_or("");
+                        self.delete_token(token).await?
+                    }
                     ("GET", path) if path.starts_with("/config/one-time/") => {
                         let enabled = path.strip_prefix("/config/one-time/")
                             .and_then(|s| s.parse::<bool>().ok())
@@ -383,11 +473,19 @@ impl Handler {
             "output.zip".to_string()
         };
 
+        let max_downloads = generate_req.max_downloads.unwrap_or(1).max(1);
+        let expires_at = generate_req.expires_in_seconds.map(|secs| {
+            std::time::Instant::now() + std::time::Duration::from_secs(secs)
+        });
+
         let item = DownloadItem {
             paths: full_paths,
             is_multi_file,
-            downloaded: std::sync::atomic::AtomicBool::new(false),
             name: name.clone(),
+            max_downloads,
+            download_count: std::sync::atomic::AtomicU32::new(0),
+            expires_at,
+            created_at: std::time::Instant::now(),
         };
 
         self.state.tokens.write().await.insert(token.clone(), item);
@@ -417,20 +515,43 @@ impl Handler {
         let tokens = self.state.tokens.read().await;
         let mut items = Vec::new();
 
+        let now = std::time::Instant::now();
         for (token, item) in tokens.iter() {
             let download_url = format!("{}/{}?k={}", self.config.download_base_url(), 
                                      self.url_encode(&item.name), token);
+            let count = item.download_count.load(Ordering::Relaxed);
+            let expired = item.expires_at.map(|e| now >= e).unwrap_or(false);
+            let expires_in_seconds = item.expires_at.and_then(|e| {
+                if now < e { Some(e.duration_since(now).as_secs()) } else { None }
+            });
             items.push(serde_json::json!({
                 "token": token,
                 "name": item.name,
                 "is_multi_file": item.is_multi_file,
-                "downloaded": item.downloaded.load(Ordering::Relaxed),
+                "download_count": count,
+                "max_downloads": item.max_downloads,
+                "remaining_downloads": item.max_downloads.saturating_sub(count),
+                "expired": expired,
+                "expires_in_seconds": expires_in_seconds,
                 "download_url": download_url,
                 "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()
             }));
         }
 
         HttpResponse::ok().body_json(&items).map_err(Into::into)
+    }
+
+    /// Deletes a download token.
+    async fn delete_token(&self, token: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tokens = self.state.tokens.write().await;
+        if tokens.remove(token).is_some() {
+            tracing::info!("Deleted token: {}", token);
+            Ok(HttpResponse::ok()
+                .content_type(content_type::JSON)
+                .body_text("{\"removed\":true}"))
+        } else {
+            Ok(HttpResponse::not_found().body_text("{\"removed\":false}"))
+        }
     }
 
     /// Handles file download requests using the provided token.
@@ -463,15 +584,21 @@ impl Handler {
             None => return Ok(HttpResponse::not_found().body_text("Token not found")),
         };
 
-        // Check if already downloaded — use compare_exchange to atomically
-        // claim the download in a single operation, preventing TOCTOU races
-        // where two concurrent requests both read `false` before either writes `true`.
-        if self.state.one_time_enabled.load(Ordering::Acquire) && item
-            .downloaded
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-                return Ok(HttpResponse::gone());
+        // Check expiry
+        if let Some(expires_at) = item.expires_at {
+            if std::time::Instant::now() >= expires_at {
+                return Ok(HttpResponse::gone().body_text("Download link has expired"));
+            }
+        }
+
+        // Check download count (only when one_time mode is enabled)
+        if self.state.one_time_enabled.load(Ordering::Acquire) {
+            let prev = item.download_count.fetch_add(1, Ordering::AcqRel);
+            if prev >= item.max_downloads {
+                // Undo the increment to avoid overflow over time
+                item.download_count.fetch_sub(1, Ordering::AcqRel);
+                return Ok(HttpResponse::gone().body_text("Download limit reached"));
+            }
         }
 
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
@@ -874,12 +1001,16 @@ mod tests {
         Handler::new(state, config)
     }
 
+    fn loopback_addr() -> std::net::SocketAddr {
+        "127.0.0.1:12345".parse().unwrap()
+    }
+
     /// When no token is configured, all admin requests are allowed.
     #[test]
     fn test_admin_auth_disabled_allows_all() {
         let handler = make_handler_with_token(None);
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         // Should NOT be 401
         assert!(!response_str.contains("401 Unauthorized"), "Unexpected 401 when auth is disabled");
@@ -890,7 +1021,7 @@ mod tests {
     fn test_admin_auth_required_rejects_missing_header() {
         let handler = make_handler_with_token(Some("secret123"));
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         assert!(response_str.contains("401 Unauthorized"));
         assert!(response_str.contains("WWW-Authenticate"));
@@ -901,7 +1032,7 @@ mod tests {
     fn test_admin_auth_required_rejects_wrong_token() {
         let handler = make_handler_with_token(Some("secret123"));
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrongtoken\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         assert!(response_str.contains("401 Unauthorized"));
     }
@@ -911,7 +1042,7 @@ mod tests {
     fn test_admin_auth_required_accepts_correct_token() {
         let handler = make_handler_with_token(Some("secret123"));
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret123\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request)).unwrap();
+        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         assert!(!response_str.contains("401 Unauthorized"), "Correct token should be accepted");
     }

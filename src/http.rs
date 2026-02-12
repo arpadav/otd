@@ -372,6 +372,25 @@ impl HttpResponse {
             .body_text("Download link has already been used")
     }
 
+    /// Creates a 302 redirect response.
+    ///
+    /// # Arguments
+    ///
+    /// * `location` - URL to redirect to
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::redirect("/login");
+    /// ```
+    pub fn redirect(location: &str) -> Self {
+        Self::new(302, "Found")
+            .header("Location", location)
+            .body_text("")
+    }
+
     /// Creates a 500 Internal Server Error response with default message.
     ///
     /// # Examples
