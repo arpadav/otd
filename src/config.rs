@@ -61,7 +61,8 @@ impl Default for Config {
     ///
     /// - Admin port: 15204
     /// - Download port: 15205
-    /// - Host: 0.0.0.0 (all interfaces)
+    /// - Admin host: 127.0.0.1 (localhost only)
+    /// - Download host: otd-hostname
     /// - Base path: current directory
     /// - Buffer size: 8KB
     /// - Max request size: 10MB
@@ -83,7 +84,7 @@ impl Default for Config {
             // Admin defaults to loopback — the admin interface has no auth
             // by default and must not be exposed to the network unprotected.
             admin_host: "127.0.0.1".to_string(),
-            download_host: "0.0.0.0".to_string(),
+            download_host: "otd-hostname".to_string(),
             base_path: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "/tmp".to_string()),
@@ -199,7 +200,7 @@ impl Config {
     ///
     /// # Returns
     ///
-    /// * `String` - Complete base URL (e.g., "http://localhost:15205")
+    /// * `String` - Complete base URL (e.g., "http://otd-hostname:15205")
     ///
     /// # Examples
     ///
@@ -208,7 +209,7 @@ impl Config {
     ///
     /// let config = Config::default();
     /// let base_url = config.download_base_url();
-    /// assert_eq!(base_url, "http://0.0.0.0:15205");
+    /// assert_eq!(base_url, "http://otd-hostname:15205");
     /// ```
     pub fn download_base_url(&self) -> String {
         let protocol = if self.enable_https { "https" } else { "http" };
@@ -227,7 +228,7 @@ mod tests {
         assert_eq!(config.download_port, 15205);
         // Admin must default to loopback for safety.
         assert_eq!(config.admin_host, "127.0.0.1");
-        assert_eq!(config.download_host, "0.0.0.0");
+        assert_eq!(config.download_host, "otd-hostname");
         assert!(!config.enable_https);
         // No token by default — users should set one if exposing over network.
         assert!(config.admin_token.is_none());
@@ -247,10 +248,10 @@ mod tests {
     #[test]
     fn test_download_base_url() {
         let mut config = Config::default();
-        assert_eq!(config.download_base_url(), "http://0.0.0.0:15205");
+        assert_eq!(config.download_base_url(), "http://otd-hostname:15205");
         
         config.enable_https = true;
-        assert_eq!(config.download_base_url(), "https://0.0.0.0:15205");
+        assert_eq!(config.download_base_url(), "https://otd-hostname:15205");
         
         config.download_host = "example.com".to_string();
         config.download_port = 443;

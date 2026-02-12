@@ -865,8 +865,10 @@ mod tests {
     }
 
     fn make_handler_with_token(token: Option<&str>) -> Handler {
-        let mut config = Config::default();
-        config.admin_token = token.map(|t| t.to_string());
+        let config = Config {
+            admin_token: token.map(|t| t.to_string()),
+            ..Default::default()
+        };
         let state = Arc::new(AppState::new(PathBuf::from("/tmp")));
         Handler::new(state, config)
     }
