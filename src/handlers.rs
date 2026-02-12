@@ -667,6 +667,7 @@ impl Handler {
     fn get_updated_html(&self) -> String {
         // Updated HTML with staging functionality
         include_str!("../static/index.html")
+            .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"))
             .replace("{{ADMIN_PORT}}", &self.config.admin_port.to_string())
             .replace("{{DOWNLOAD_PORT}}", &self.config.download_port.to_string())
     }

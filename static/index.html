@@ -1,678 +1,337 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>One-Time Download Links</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        .header {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        
-        .main-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 20px;
-        }
-        
-        .panel {
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        
-        .panel-header {
-            background: #007acc;
-            color: white;
-            padding: 15px 20px;
-            font-weight: 600;
-        }
-        
-        .panel-content {
-            padding: 20px;
-        }
-        
-        .breadcrumb {
-            background: #f8f9fa;
-            padding: 10px 15px;
-            border-bottom: 1px solid #e9ecef;
-            font-size: 14px;
-            color: #666;
-        }
-        
-        .file-list {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .file-item {
-            display: flex;
-            align-items: center;
-            padding: 10px 15px;
-            border-bottom: 1px solid #f0f0f0;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        
-        .file-item:hover {
-            background: #f8f9fa;
-        }
-        
-        .file-item.selected {
-            background: #e3f2fd;
-        }
-        
-        .file-checkbox {
-            margin-right: 10px;
-        }
-        
-        .file-icon {
-            margin-right: 10px;
-            font-size: 16px;
-        }
-        
-        .file-name {
-            flex: 1;
-            font-weight: 500;
-        }
-        
-        .file-size {
-            color: #666;
-            font-size: 12px;
-        }
-        
-        .staged-files {
-            max-height: 300px;
-            overflow-y: auto;
-            margin-bottom: 20px;
-        }
-        
-        .staged-item {
-            display: flex;
-            align-items: center;
-            padding: 8px 12px;
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 4px;
-            margin-bottom: 5px;
-        }
-        
-        .staged-name {
-            flex: 1;
-            font-size: 14px;
-        }
-        
-        .remove-btn {
-            background: #dc3545;
-            color: white;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 11px;
-        }
-        
-        .remove-btn:hover {
-            background: #c82333;
-        }
-        
-        .generate-section {
-            border-top: 1px solid #e9ecef;
-            padding-top: 15px;
-        }
-        
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 500;
-            font-size: 14px;
-        }
-        
-        .form-input {
-            width: 100%;
-            padding: 8px 12px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .generate-btn {
-            background: #28a745;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            width: 100%;
-        }
-        
-        .generate-btn:hover {
-            background: #218838;
-        }
-        
-        .generate-btn:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-        
-        .clear-btn {
-            background: #6c757d;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            margin-bottom: 10px;
-        }
-        
-        .clear-btn:hover {
-            background: #5a6268;
-        }
-        
-        .token-item {
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 4px;
-            padding: 15px;
-            margin-bottom: 10px;
-        }
-        
-        .token-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .token-name {
-            font-weight: 600;
-            color: #007acc;
-        }
-        
-        .token-status {
-            font-size: 12px;
-            padding: 2px 6px;
-            border-radius: 3px;
-        }
-        
-        .status-active {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .status-used {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .token-url {
-            font-family: monospace;
-            font-size: 12px;
-            background: white;
-            padding: 8px;
-            border-radius: 3px;
-            border: 1px solid #ddd;
-            word-break: break-all;
-            margin: 8px 0;
-        }
-        
-        .copy-btn {
-            background: #007acc;
-            color: white;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 11px;
-        }
-        
-        .copy-btn:hover {
-            background: #0056b3;
-        }
-        
-        .loading {
-            text-align: center;
-            padding: 20px;
-            color: #666;
-        }
-        
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 10px;
-            border-radius: 4px;
-            margin: 10px 0;
-        }
-        
-        .success {
-            background: #d4edda;
-            color: #155724;
-            padding: 10px;
-            border-radius: 4px;
-            margin: 10px 0;
-        }
-        
-        @media (max-width: 1200px) {
-            .main-content {
-                grid-template-columns: 1fr 1fr;
-            }
-        }
-        
-        @media (max-width: 768px) {
-            .main-content {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
+    <title>OTD — One-Time Downloads</title>
+    <style>{{TAILWIND_CSS}}</style>
 </head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>One-Time Download Links</h1>
-            <p>Browse files, stage selections, and create secure one-time download links</p>
-        </div>
-        
-        <div class="main-content">
-            <div class="panel">
-                <div class="panel-header">File Browser</div>
-                <div class="breadcrumb" id="breadcrumb">Loading...</div>
-                <div class="file-list" id="fileList">
-                    <div class="loading">Loading files...</div>
+<body class="h-full bg-surface-alt text-text antialiased">
+    <!-- Toast container -->
+    <div id="toastContainer" class="fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
+
+    <div class="min-h-full flex flex-col">
+        <!-- Header -->
+        <header class="bg-brand text-white">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex items-center justify-between">
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight flex items-center gap-2">
+                        <svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374" />
+                        </svg>
+                        OTD
+                    </h1>
+                    <p class="text-sm text-slate-400 mt-0.5">Secure one-time download links</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-2 text-sm cursor-pointer select-none">
+                        <span class="text-slate-300">One-time mode</span>
+                        <button id="oneTimeToggle" onclick="toggleOneTime()" class="relative w-10 h-5 rounded-full bg-slate-600 transition-colors focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-brand" role="switch" aria-checked="true">
+                            <span id="oneTimeKnob" class="absolute top-0.5 left-5 w-4 h-4 rounded-full bg-white shadow transition-all"></span>
+                        </button>
+                    </label>
                 </div>
             </div>
-            
-            <div class="panel">
-                <div class="panel-header">Staged Files</div>
-                <div class="panel-content">
-                    <button class="clear-btn" onclick="clearStaged()">Clear All</button>
-                    <div class="staged-files" id="stagedFiles">
-                        <div class="loading">No files staged</div>
+        </header>
+
+        <!-- Main content -->
+        <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+
+                <!-- File Browser -->
+                <div class="bg-surface rounded-xl border border-border shadow-sm flex flex-col overflow-hidden">
+                    <div class="px-4 py-3 border-b border-border bg-surface-alt">
+                        <h2 class="text-sm font-semibold text-text uppercase tracking-wide">File Browser</h2>
                     </div>
-                    
-                    <div class="generate-section">
-                        <div class="form-group">
-                            <label class="form-label" for="downloadName">Download Name (optional)</label>
-                            <input type="text" id="downloadName" class="form-input" placeholder="Leave empty for auto-naming">
+                    <div id="breadcrumb" class="px-4 py-2 border-b border-border text-sm text-text-muted bg-surface-alt/50 flex items-center gap-1 flex-wrap min-h-[36px]">
+                        Loading…
+                    </div>
+                    <div id="fileList" class="flex-1 overflow-y-auto divide-y divide-border/50">
+                        <div class="p-8 text-center text-text-muted text-sm">Loading files…</div>
+                    </div>
+                </div>
+
+                <!-- Staged Files -->
+                <div class="bg-surface rounded-xl border border-border shadow-sm flex flex-col overflow-hidden">
+                    <div class="px-4 py-3 border-b border-border bg-surface-alt flex items-center justify-between">
+                        <h2 class="text-sm font-semibold text-text uppercase tracking-wide">Staged Files</h2>
+                        <button onclick="clearStaged()" class="text-xs text-text-muted hover:text-danger transition-colors">Clear all</button>
+                    </div>
+                    <div id="stagedFiles" class="flex-1 overflow-y-auto divide-y divide-border/50 min-h-[120px]">
+                        <div class="p-8 text-center text-text-muted text-sm">No files staged</div>
+                    </div>
+                    <div class="p-4 border-t border-border space-y-3">
+                        <div>
+                            <label for="downloadName" class="block text-xs font-medium text-text-muted mb-1">Download name <span class="text-text-muted/60">(optional)</span></label>
+                            <input type="text" id="downloadName" placeholder="Auto-generated if empty" class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all placeholder:text-text-muted/50">
                         </div>
-                        <button class="generate-btn" id="generateBtn" onclick="generateStagedLink()" disabled>
+                        <button id="generateBtn" onclick="generateStagedLink()" disabled class="w-full py-2.5 px-4 text-sm font-medium rounded-lg bg-accent text-white hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2">
                             Generate Download Link
                         </button>
                     </div>
                 </div>
-            </div>
-            
-            <div class="panel">
-                <div class="panel-header">Generated Links</div>
-                <div class="panel-content">
-                    <div id="tokenList">
-                        <div class="loading">Loading tokens...</div>
+
+                <!-- Generated Links -->
+                <div class="bg-surface rounded-xl border border-border shadow-sm flex flex-col overflow-hidden">
+                    <div class="px-4 py-3 border-b border-border bg-surface-alt">
+                        <h2 class="text-sm font-semibold text-text uppercase tracking-wide">Generated Links</h2>
+                    </div>
+                    <div id="tokenList" class="flex-1 overflow-y-auto p-4 space-y-3">
+                        <div class="text-center text-text-muted text-sm py-8">Loading…</div>
                     </div>
                 </div>
+
             </div>
-        </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="border-t border-border bg-surface">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 text-xs text-text-muted text-center">
+                OTD &mdash; One-Time Downloads
+            </div>
+        </footer>
     </div>
 
     <script>
-        /**
-         * Escape a string for safe insertion into HTML.
-         * Replaces &, <, >, ", ' with their HTML entity equivalents.
-         * Always use this before interpolating user-controlled data into innerHTML.
-         *
-         * @param {string} str - The raw string to escape
-         * @returns {string} HTML-safe string
-         */
+        // --- Utilities ---
         function escapeHtml(str) {
             if (str == null) return '';
-            return String(str)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#x27;');
+            return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
         }
 
+        function formatBytes(bytes) {
+            if (!bytes) return '';
+            const k = 1024, sizes = ['B','KB','MB','GB','TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function toast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const el = document.createElement('div');
+            const colors = {
+                success: 'bg-success-bg text-emerald-800 border-emerald-200',
+                error: 'bg-danger-bg text-red-800 border-red-200',
+                info: 'bg-blue-50 text-blue-800 border-blue-200'
+            };
+            el.className = `px-4 py-2.5 rounded-lg border text-sm font-medium shadow-lg animate-fade-in ${colors[type] || colors.info}`;
+            el.textContent = message;
+            container.appendChild(el);
+            setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3000);
+        }
+
+        // --- State ---
         let currentPath = '';
         let stagedFiles = new Map();
-        
+        let oneTimeEnabled = true;
+
+        // --- One-time toggle ---
+        async function toggleOneTime() {
+            oneTimeEnabled = !oneTimeEnabled;
+            const toggle = document.getElementById('oneTimeToggle');
+            const knob = document.getElementById('oneTimeKnob');
+            if (oneTimeEnabled) {
+                toggle.classList.remove('bg-slate-600');
+                toggle.classList.add('bg-accent');
+                toggle.setAttribute('aria-checked', 'true');
+                knob.classList.remove('left-0.5');
+                knob.classList.add('left-5');
+            } else {
+                toggle.classList.remove('bg-accent');
+                toggle.classList.add('bg-slate-600');
+                toggle.setAttribute('aria-checked', 'false');
+                knob.classList.remove('left-5');
+                knob.classList.add('left-0.5');
+            }
+            try {
+                await fetch(`/api/config/one-time?enabled=${oneTimeEnabled}`, { method: 'POST' });
+            } catch (e) { /* best effort */ }
+        }
+
+        // Init toggle state
+        document.addEventListener('DOMContentLoaded', () => {
+            const toggle = document.getElementById('oneTimeToggle');
+            toggle.classList.add('bg-accent');
+        });
+
+        // --- File Browser ---
         async function loadFiles(path = '') {
             try {
                 const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
                 const files = await response.json();
-                
                 currentPath = path;
                 updateBreadcrumb(path);
                 renderFiles(files);
             } catch (error) {
-                document.getElementById('fileList').innerHTML = 
-                    '<div class="error">Error loading files: ' + error.message + '</div>';
+                document.getElementById('fileList').innerHTML = `<div class="p-4 text-sm text-red-600">Error: ${escapeHtml(error.message)}</div>`;
             }
         }
-        
-        function updateBreadcrumb(path) {
-            const breadcrumb = document.getElementById('breadcrumb');
-            breadcrumb.innerHTML = '';
 
-            // Home span — no user data, safe to set directly
-            const homeSpan = document.createElement('span');
-            homeSpan.textContent = 'Home';
-            homeSpan.style.cssText = 'cursor: pointer; color: #007acc;';
-            homeSpan.addEventListener('click', () => loadFiles(''));
-            breadcrumb.appendChild(homeSpan);
+        function updateBreadcrumb(path) {
+            const bc = document.getElementById('breadcrumb');
+            bc.innerHTML = '';
+
+            const home = document.createElement('span');
+            home.textContent = '~';
+            home.className = 'cursor-pointer hover:text-accent transition-colors font-medium';
+            home.addEventListener('click', () => loadFiles(''));
+            bc.appendChild(home);
 
             if (!path) return;
-
-            const parts = path.split('/').filter(p => p);
-            let builtPath = '';
+            const parts = path.split('/').filter(Boolean);
+            let built = '';
             for (const part of parts) {
-                builtPath += (builtPath ? '/' : '') + part;
-                const sep = document.createTextNode(' / ');
-                breadcrumb.appendChild(sep);
-
-                // Capture builtPath for the closure
-                const capturePath = builtPath;
+                built += (built ? '/' : '') + part;
+                bc.appendChild(Object.assign(document.createElement('span'), { textContent: ' / ', className: 'text-text-muted/40' }));
+                const capture = built;
                 const span = document.createElement('span');
-                span.textContent = part; // textContent is XSS-safe
-                span.style.cssText = 'cursor: pointer; color: #007acc;';
-                span.addEventListener('click', () => loadFiles(capturePath));
-                breadcrumb.appendChild(span);
+                span.textContent = part;
+                span.className = 'cursor-pointer hover:text-accent transition-colors';
+                span.addEventListener('click', () => loadFiles(capture));
+                bc.appendChild(span);
             }
         }
-        
+
         function renderFiles(files) {
-            const fileList = document.getElementById('fileList');
-            
-            if (files.length === 0) {
-                fileList.innerHTML = '<div class="loading">No files found</div>';
-                return;
-            }
-            
+            const list = document.getElementById('fileList');
+            if (!files.length) { list.innerHTML = '<div class="p-8 text-center text-text-muted text-sm">Empty directory</div>'; return; }
+
             let html = '';
-            for (const file of files) {
-                const icon = file.is_dir ? '📁' : '📄';
-                const sizeText = file.size ? formatBytes(file.size) : '';
-                const isStaged = stagedFiles.has(file.path);
-                
-                html += `
-                    <div class="file-item ${isStaged ? 'selected' : ''}" data-path="${escapeHtml(file.path)}" data-isdir="${file.is_dir}">
-                        ${file.name !== '..' ? `<input type="checkbox" class="file-checkbox" ${isStaged ? 'checked' : ''} data-path="${escapeHtml(file.path)}" data-name="${escapeHtml(file.name)}" data-isdir="${file.is_dir}" data-size="${file.size || ''}">` : ''}
-                        <span class="file-icon">${icon}</span>
-                        <span class="file-name">${escapeHtml(file.name)}</span>
-                        <span class="file-size">${escapeHtml(sizeText)}</span>
-                    </div>
-                `;
+            for (const f of files) {
+                const staged = stagedFiles.has(f.path);
+                const icon = f.is_dir
+                    ? `<svg class="w-4 h-4 text-accent shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>`
+                    : `<svg class="w-4 h-4 text-text-muted/60 shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>`;
+
+                html += `<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-alt cursor-pointer transition-colors group ${staged ? 'bg-accent/5' : ''}" data-path="${escapeHtml(f.path)}" data-isdir="${f.is_dir}">`;
+                if (f.name !== '..') {
+                    html += `<input type="checkbox" class="w-4 h-4 rounded border-border text-accent focus:ring-accent shrink-0 cursor-pointer" ${staged ? 'checked' : ''} data-path="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}" data-isdir="${f.is_dir}" data-size="${f.size || ''}">`;
+                }
+                html += `${icon}<span class="flex-1 text-sm font-medium truncate ${f.is_dir ? 'text-text' : 'text-text/80'}">${escapeHtml(f.name)}</span>`;
+                if (f.size) html += `<span class="text-xs text-text-muted tabular-nums">${escapeHtml(formatBytes(f.size))}</span>`;
+                html += `</div>`;
             }
-            
-            fileList.innerHTML = html;
+            list.innerHTML = html;
         }
-        
-        // Event delegation: single listener on file list handles all item clicks
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('tokenList').addEventListener('click', (event) => {
-                const btn = event.target.closest('.copy-btn');
-                if (btn) {
-                    copyToClipboard(btn.dataset.url);
-                }
-            });
 
-            document.getElementById('stagedFiles').addEventListener('click', (event) => {
-                const btn = event.target.closest('.remove-btn');
-                if (btn) {
-                    removeStaged(btn.dataset.path);
-                }
-            });
-
-            document.getElementById('fileList').addEventListener('click', (event) => {
-                const checkbox = event.target.closest('input[type="checkbox"]');
-                if (checkbox) {
-                    const path = checkbox.dataset.path;
-                    const name = checkbox.dataset.name;
-                    const isDir = checkbox.dataset.isdir === 'true';
-                    const size = checkbox.dataset.size ? parseInt(checkbox.dataset.size, 10) : null;
-                    toggleStaged(path, name, isDir, size);
-                    return;
-                }
-
-                const item = event.target.closest('.file-item');
-                if (item) {
-                    const path = item.dataset.path;
-                    const isDir = item.dataset.isdir === 'true';
-                    if (isDir && path !== '') {
-                        loadFiles(path);
-                    }
-                }
-            });
-        });
-
-        function handleFileClick(path, isDir, event) {
-            if (event.target.type === 'checkbox') {
-                return; // Checkbox handles its own logic
-            }
-            
-            if (isDir && path !== '..') {
-                loadFiles(path);
-            }
-        }
-        
+        // --- Staged Files ---
         function toggleStaged(path, name, isDir, size) {
-            if (stagedFiles.has(path)) {
-                stagedFiles.delete(path);
-            } else {
-                stagedFiles.set(path, {
-                    name: name,
-                    path: path,
-                    is_dir: isDir,
-                    size: size
-                });
-            }
-            
+            if (stagedFiles.has(path)) stagedFiles.delete(path);
+            else stagedFiles.set(path, { name, path, is_dir: isDir, size });
             renderStagedFiles();
             updateGenerateButton();
-            
-            // Update the file list to reflect selection
             loadFiles(currentPath);
         }
-        
+
         function renderStagedFiles() {
-            const stagedContainer = document.getElementById('stagedFiles');
-            
-            if (stagedFiles.size === 0) {
-                stagedContainer.innerHTML = '<div class="loading">No files staged</div>';
-                return;
-            }
-            
+            const container = document.getElementById('stagedFiles');
+            if (!stagedFiles.size) { container.innerHTML = '<div class="p-8 text-center text-text-muted text-sm">No files staged</div>'; return; }
+
             let html = '';
-            for (const [path, file] of stagedFiles) {
-                const icon = file.is_dir ? '📁' : '📄';
-                const sizeText = file.size ? formatBytes(file.size) : '';
-                
-                html += `
-                    <div class="staged-item">
-                        <span class="file-icon">${icon}</span>
-                        <span class="staged-name">${escapeHtml(file.name)} ${escapeHtml(sizeText)}</span>
-                        <button class="remove-btn" data-path="${escapeHtml(path)}">Remove</button>
-                    </div>
-                `;
+            for (const [path, f] of stagedFiles) {
+                const icon = f.is_dir ? '📁' : '📄';
+                html += `<div class="flex items-center gap-3 px-4 py-2.5">
+                    <span class="text-sm">${icon}</span>
+                    <span class="flex-1 text-sm truncate">${escapeHtml(f.name)}</span>
+                    ${f.size ? `<span class="text-xs text-text-muted">${escapeHtml(formatBytes(f.size))}</span>` : ''}
+                    <button data-path="${escapeHtml(path)}" class="remove-btn text-text-muted hover:text-danger transition-colors p-1 rounded hover:bg-danger-bg">
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+                    </button>
+                </div>`;
             }
-            
-            stagedContainer.innerHTML = html;
+            container.innerHTML = html;
         }
-        
-        function removeStaged(path) {
-            stagedFiles.delete(path);
-            renderStagedFiles();
-            updateGenerateButton();
-            loadFiles(currentPath); // Refresh to update checkboxes
-        }
-        
-        function clearStaged() {
-            stagedFiles.clear();
-            renderStagedFiles();
-            updateGenerateButton();
-            loadFiles(currentPath); // Refresh to update checkboxes
-        }
-        
-        function updateGenerateButton() {
-            const generateBtn = document.getElementById('generateBtn');
-            generateBtn.disabled = stagedFiles.size === 0;
-        }
-        
+
+        function removeStaged(path) { stagedFiles.delete(path); renderStagedFiles(); updateGenerateButton(); loadFiles(currentPath); }
+        function clearStaged() { stagedFiles.clear(); renderStagedFiles(); updateGenerateButton(); loadFiles(currentPath); }
+        function updateGenerateButton() { document.getElementById('generateBtn').disabled = stagedFiles.size === 0; }
+
+        // --- Generate Link ---
         async function generateStagedLink() {
-            if (stagedFiles.size === 0) {
-                return;
-            }
-            
-            const generateBtn = document.getElementById('generateBtn');
-            generateBtn.disabled = true;
-            generateBtn.textContent = 'Generating...';
-            
+            if (!stagedFiles.size) return;
+            const btn = document.getElementById('generateBtn');
+            btn.disabled = true;
+            btn.textContent = 'Generating…';
             try {
                 const paths = Array.from(stagedFiles.keys());
                 const customName = document.getElementById('downloadName').value.trim();
-                
-                const response = await fetch('/api/generate', {
+                const res = await fetch('/api/generate', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        paths: paths,
-                        name: customName || null
-                    }),
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ paths, name: customName || null })
                 });
-                
-                if (!response.ok) {
-                    throw new Error('Failed to generate link');
-                }
-                
-                const result = await response.json();
-                
-                // Clear staged files and form
+                if (!res.ok) throw new Error('Failed to generate link');
                 clearStaged();
                 document.getElementById('downloadName').value = '';
-                
-                // Show success message
-                showMessage('Download link generated successfully!', 'success');
-                
-                // Refresh token list
+                toast('Download link generated!');
                 loadTokens();
-                
-            } catch (error) {
-                showMessage('Error generating link: ' + error.message, 'error');
+            } catch (e) {
+                toast('Error: ' + e.message, 'error');
             } finally {
-                generateBtn.disabled = false;
-                generateBtn.textContent = 'Generate Download Link';
+                btn.disabled = false;
+                btn.textContent = 'Generate Download Link';
                 updateGenerateButton();
             }
         }
-        
+
+        // --- Tokens ---
         async function loadTokens() {
             try {
-                const response = await fetch('/api/tokens');
-                const tokens = await response.json();
+                const res = await fetch('/api/tokens');
+                const tokens = await res.json();
                 renderTokens(tokens);
-            } catch (error) {
-                document.getElementById('tokenList').innerHTML = 
-                    '<div class="error">Error loading tokens: ' + error.message + '</div>';
+            } catch (e) {
+                document.getElementById('tokenList').innerHTML = `<div class="text-sm text-red-600 p-4">Error loading tokens</div>`;
             }
         }
-        
+
         function renderTokens(tokens) {
-            const tokenList = document.getElementById('tokenList');
-            
-            if (tokens.length === 0) {
-                tokenList.innerHTML = '<div class="loading">No download links generated yet</div>';
-                return;
-            }
-            
+            const container = document.getElementById('tokenList');
+            if (!tokens.length) { container.innerHTML = '<div class="text-center text-text-muted text-sm py-8">No links generated yet</div>'; return; }
+
             let html = '';
-            for (const token of tokens) {
-                const status = token.downloaded ? 'used' : 'active';
-                const statusClass = token.downloaded ? 'status-used' : 'status-active';
-                const statusText = token.downloaded ? 'Used' : 'Active';
-                
-                html += `
-                    <div class="token-item">
-                        <div class="token-header">
-                            <span class="token-name">${escapeHtml(token.name)}</span>
-                            <span class="token-status ${statusClass}">${escapeHtml(statusText)}</span>
-                        </div>
-                        <div class="token-url">${escapeHtml(token.download_url || 'N/A')}</div>
-                        <button class="copy-btn" data-url="${escapeHtml(token.download_url || '')}">Copy Link</button>
+            for (const t of tokens) {
+                const used = t.downloaded;
+                html += `<div class="rounded-lg border ${used ? 'border-border bg-surface-alt/50' : 'border-accent/20 bg-accent/5'} p-3 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-semibold ${used ? 'text-text-muted line-through' : 'text-text'}">${escapeHtml(t.name)}</span>
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full ${used ? 'bg-danger-bg text-red-700' : 'bg-success-bg text-emerald-700'}">${used ? 'Used' : 'Active'}</span>
                     </div>
-                `;
+                    <div class="font-mono text-xs bg-brand/5 rounded px-2.5 py-1.5 break-all text-text-muted select-all">${escapeHtml(t.download_url || 'N/A')}</div>
+                    <button data-url="${escapeHtml(t.download_url || '')}" class="copy-btn inline-flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover transition-colors">
+                        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/></svg>
+                        Copy
+                    </button>
+                </div>`;
             }
-            
-            tokenList.innerHTML = html;
+            container.innerHTML = html;
         }
-        
+
         function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                showMessage('Link copied to clipboard!', 'success');
-            }).catch(() => {
-                showMessage('Failed to copy link', 'error');
+            navigator.clipboard.writeText(text).then(() => toast('Copied!')).catch(() => toast('Copy failed', 'error'));
+        }
+
+        // --- Event Delegation ---
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('fileList').addEventListener('click', (e) => {
+                const cb = e.target.closest('input[type="checkbox"]');
+                if (cb) { toggleStaged(cb.dataset.path, cb.dataset.name, cb.dataset.isdir === 'true', cb.dataset.size ? parseInt(cb.dataset.size) : null); return; }
+                const item = e.target.closest('[data-path]');
+                if (item && item.dataset.isdir === 'true') loadFiles(item.dataset.path);
             });
-        }
-        
-        function showMessage(message, type) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = type;
-            messageDiv.textContent = message;
-            messageDiv.style.position = 'fixed';
-            messageDiv.style.top = '20px';
-            messageDiv.style.right = '20px';
-            messageDiv.style.zIndex = '1000';
-            messageDiv.style.padding = '10px 15px';
-            messageDiv.style.borderRadius = '4px';
-            
-            document.body.appendChild(messageDiv);
-            
-            setTimeout(() => {
-                document.body.removeChild(messageDiv);
-            }, 3000);
-        }
-        
-        function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        }
-        
-        // Initialize the app
+            document.getElementById('tokenList').addEventListener('click', (e) => {
+                const btn = e.target.closest('.copy-btn');
+                if (btn) copyToClipboard(btn.dataset.url);
+            });
+            document.getElementById('stagedFiles').addEventListener('click', (e) => {
+                const btn = e.target.closest('.remove-btn');
+                if (btn) removeStaged(btn.dataset.path);
+            });
+        });
+
+        // --- Init ---
         loadFiles();
         loadTokens();
-        
-        // Refresh tokens every 30 seconds
         setInterval(loadTokens, 30000);
     </script>
 </body>
