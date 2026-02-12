@@ -131,6 +131,7 @@ impl Handler {
 
                 let response = match (method, path) {
                     ("GET", "/") => self.web_interface().await?,
+                    ("GET", "/about") => self.about_page().await?,
                     ("GET", "/api/browse") => self.browse(query).await?,
                     ("POST", "/api/generate") => {
                         let body = self.extract_body(request)?;
@@ -224,6 +225,15 @@ impl Handler {
     /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - HTML response or error
     async fn web_interface(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let html = self.get_updated_html();
+        Ok(HttpResponse::ok()
+            .content_type(content_type::HTML)
+            .body_text(&html))
+    }
+
+    /// Serves the static "About" page.
+    async fn about_page(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let html = include_str!("../static/about.html")
+            .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"));
         Ok(HttpResponse::ok()
             .content_type(content_type::HTML)
             .body_text(&html))
