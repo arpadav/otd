@@ -4,8 +4,12 @@
 //! including download items, request/response types, and shared application state.
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf, sync::atomic::{AtomicBool, AtomicU32}};
 use smol::lock::RwLock;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::atomic::{AtomicBool, AtomicU32},
+};
 
 /// Represents a downloadable item with one or more files/folders.
 ///
@@ -54,7 +58,11 @@ pub struct DownloadQuery {
 /// let request = GenerateRequest {
 ///     paths: vec!["folder1".to_string(), "file.txt".to_string()],
 ///     name: Some("my-download.zip".to_string()),
+///     max_downloads: Some(5),
+///     expires_in_seconds: Some(3600),
 /// };
+///
+/// assert_eq!(request.paths.len(), 2);
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
@@ -204,7 +212,7 @@ mod tests {
     fn test_app_state_creation() {
         let base_path = PathBuf::from("/test/path");
         let state = AppState::new(base_path.clone());
-        
+
         assert_eq!(state.base_path, base_path);
         assert!(state.one_time_enabled.load(Ordering::Relaxed));
     }
@@ -220,7 +228,7 @@ mod tests {
             expires_at: None,
             created_at: std::time::Instant::now(),
         };
-        
+
         assert_eq!(item.paths.len(), 1);
         assert!(!item.is_multi_file);
         assert_eq!(item.download_count.load(Ordering::Relaxed), 0);
@@ -236,7 +244,7 @@ mod tests {
             is_dir: false,
             size: Some(1024),
         };
-        
+
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains("test.txt"));
         assert!(json.contains("1024"));
