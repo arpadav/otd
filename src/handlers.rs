@@ -161,10 +161,9 @@ impl Handler {
                         let mut valid_session = false;
                         if let Some(token) = session_token {
                             let sessions = self.state.sessions.read().await;
-                            if let Some(created) = sessions.get(token) {
-                                if created.elapsed() < std::time::Duration::from_secs(24 * 60 * 60) {
-                                    valid_session = true;
-                                }
+                            if let Some(created) = sessions.get(token)
+                                && created.elapsed() < std::time::Duration::from_secs(24 * 60 * 60) {
+                                valid_session = true;
                             }
                         }
 
@@ -219,14 +218,23 @@ impl Handler {
                     ("GET", "/") => self.web_interface().await?,
                     ("GET", "/about") => self.about_page().await?,
                     ("GET", "/api/browse") => self.browse(query).await?,
+                    ("GET", "/api/stats") => self.stats().await?,
+                    ("GET", "/api/tokens") => self.list_tokens().await?,
                     ("POST", "/api/generate") => {
                         let body = self.extract_body(request)?;
                         self.generate_link(&body).await?
                     },
-                    ("GET", "/api/tokens") => self.list_tokens().await?,
+                    ("POST", "/api/tokens/bulk-delete") => {
+                        let body = self.extract_body(request)?;
+                        self.bulk_delete_tokens(&body).await?
+                    },
                     ("DELETE", path) if path.starts_with("/api/tokens/") => {
                         let token = path.strip_prefix("/api/tokens/").unwrap_or("");
                         self.delete_token(token).await?
+                    }
+                    ("GET", "/logout") => {
+                        HttpResponse::redirect("/login")
+                            .header("Set-Cookie", "otd_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
                     }
                     ("GET", path) if path.starts_with("/config/one-time/") => {
                         let enabled = path.strip_prefix("/config/one-time/")
@@ -551,6 +559,79 @@ impl Handler {
         HttpResponse::ok().body_json(&items).map_err(Into::into)
     }
 
+    // --------------------------------------------------
+    // Stats
+    // --------------------------------------------------
+
+    /// Returns dashboard statistics as JSON.
+    async fn stats(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let tokens = self.state.tokens.read().await;
+        let now = std::time::Instant::now();
+
+        let mut active = 0u32;
+        let mut used = 0u32;
+        let mut expired = 0u32;
+        let mut total_downloads = 0u64;
+
+        for item in tokens.values() {
+            let count = item.download_count.load(Ordering::Relaxed);
+            total_downloads += count as u64;
+            let is_expired = item.expires_at.is_some_and(|e| now >= e);
+            let is_used = count >= item.max_downloads;
+            if is_expired {
+                expired += 1;
+            } else if is_used {
+                used += 1;
+            } else {
+                active += 1;
+            }
+        }
+
+        let uptime_seconds = self.state.started_at.elapsed().as_secs();
+
+        let stats = serde_json::json!({
+            "active_tokens": active,
+            "used_tokens": used,
+            "expired_tokens": expired,
+            "total_downloads": total_downloads,
+            "uptime_seconds": uptime_seconds,
+        });
+
+        HttpResponse::ok().body_json(&stats).map_err(Into::into)
+    }
+
+    // --------------------------------------------------
+    // Bulk delete
+    // --------------------------------------------------
+
+    /// Deletes tokens matching a filter: "used", "expired", or "all".
+    async fn bulk_delete_tokens(&self, body: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        #[derive(serde::Deserialize)]
+        struct BulkDeleteRequest { filter: String }
+
+        let req: BulkDeleteRequest = serde_json::from_str(body)?;
+        let mut tokens = self.state.tokens.write().await;
+        let before = tokens.len();
+        let now = std::time::Instant::now();
+
+        tokens.retain(|_, item| {
+            let count = item.download_count.load(Ordering::Relaxed);
+            let is_expired = item.expires_at.is_some_and(|e| now >= e);
+            let is_used = count >= item.max_downloads;
+            match req.filter.as_str() {
+                "used" => !is_used,
+                "expired" => !is_expired,
+                "all" => false,
+                _ => true,
+            }
+        });
+
+        let removed = before - tokens.len();
+        tracing::info!("Bulk delete (filter={}): removed {} tokens", req.filter, removed);
+
+        HttpResponse::ok().body_json(&serde_json::json!({ "removed": removed })).map_err(Into::into)
+    }
+
     /// Deletes a download token.
     async fn delete_token(&self, token: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let mut tokens = self.state.tokens.write().await;
@@ -595,10 +676,9 @@ impl Handler {
         };
 
         // Check expiry
-        if let Some(expires_at) = item.expires_at {
-            if std::time::Instant::now() >= expires_at {
-                return Ok(HttpResponse::gone().body_text("Download link has expired"));
-            }
+        if let Some(expires_at) = item.expires_at
+            && std::time::Instant::now() >= expires_at {
+            return Ok(HttpResponse::gone().body_text("Download link has expired"));
         }
 
         // Check download count (only when one_time mode is enabled)
@@ -802,11 +882,13 @@ impl Handler {
     ///
     /// * `String` - Complete HTML interface
     fn get_updated_html(&self) -> String {
-        // Updated HTML with staging functionality
         include_str!("../static/index.html")
             .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"))
+            .replace("{{ADMIN_HOST}}", &self.config.admin_host)
             .replace("{{ADMIN_PORT}}", &self.config.admin_port.to_string())
+            .replace("{{DOWNLOAD_HOST}}", &self.config.download_host)
             .replace("{{DOWNLOAD_PORT}}", &self.config.download_port.to_string())
+            .replace("{{BASE_PATH}}", &self.config.base_path)
     }
 
     /// Safely joins `relative` onto `base_path` and verifies the resolved path

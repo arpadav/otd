@@ -164,6 +164,8 @@ pub struct AppState {
     pub base_path: PathBuf,
     /// Active login sessions: token → creation time
     pub sessions: RwLock<HashMap<String, std::time::Instant>>,
+    /// Server start time for uptime tracking
+    pub started_at: std::time::Instant,
 }
 
 impl AppState {
@@ -188,6 +190,7 @@ impl AppState {
             one_time_enabled: AtomicBool::new(true),
             base_path,
             sessions: RwLock::new(HashMap::new()),
+            started_at: std::time::Instant::now(),
         }
     }
 }

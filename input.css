@@ -18,3 +18,21 @@
   --color-danger-bg: #fef2f2;
   --color-warning-bg: #fffbeb;
 }
+
+@variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  .dark {
+    --color-brand: #0f172a;
+    --color-brand-light: #1e293b;
+    --color-surface: #1e293b;
+    --color-surface-alt: #0f172a;
+    --color-border: #334155;
+    --color-border-hover: #475569;
+    --color-text: #f1f5f9;
+    --color-text-muted: #94a3b8;
+    --color-success-bg: #064e3b;
+    --color-danger-bg: #7f1d1d;
+    --color-warning-bg: #78350f;
+  }
+}
