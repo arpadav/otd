@@ -214,6 +214,17 @@ impl Handler {
                     }
                 }
 
+                // Extract session cookie for use in route handlers (e.g. logout)
+                let session_cookie = req.headers.iter()
+                    .find(|h| h.name.eq_ignore_ascii_case("Cookie"))
+                    .and_then(|h| std::str::from_utf8(h.value).ok())
+                    .unwrap_or("")
+                    .split(';')
+                    .map(|s| s.trim())
+                    .find(|s| s.starts_with("otd_session="))
+                    .and_then(|s| s.strip_prefix("otd_session="))
+                    .map(|s| s.to_string());
+
                 let response = match (method, path) {
                     ("GET", "/") => self.web_interface().await?,
                     ("GET", "/about") => self.about_page().await?,
@@ -233,6 +244,11 @@ impl Handler {
                         self.delete_token(token).await?
                     }
                     ("GET", "/logout") => {
+                        // Invalidate session server-side before clearing cookie
+                        if let Some(ref token) = session_cookie {
+                            self.state.sessions.write().await.remove(token);
+                            tracing::info!("Session invalidated on logout");
+                        }
                         HttpResponse::redirect("/login")
                             .header("Set-Cookie", "otd_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
                     }
