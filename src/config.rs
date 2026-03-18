@@ -37,15 +37,18 @@ const OTD_BASE_ENVIRONMENT_VAR: &str = "OTD_BASE_PATH";
 pub struct Config {
     /// Port for the admin interface (file browsing, link generation)
     pub admin_port: u16,
-    /// Port for the download server (file downloads only)
-    pub download_port: u16,
     /// Host/IP address for the admin interface.
-    /// Defaults to `127.0.0.1` — intentionally localhost-only.
+    /// Defaults to `127.0.0.1` - intentionally localhost-only.
     /// Set to `0.0.0.0` only if you are behind a trusted reverse proxy
     /// that enforces its own authentication.
     pub admin_host: String,
+    /// Port for the download server (file downloads only)
+    pub download_port: u16,
     /// Host/IP address for the download server
     pub download_host: String,
+    /// Base url for download links (e.g., "https://files.example.com/")
+    /// If `None`, will just default to the download host and port (e.g., "http://{download_host}:{download_port}").
+    pub download_base_url: Option<String>,
     /// Base directory path for file serving
     pub base_path: String,
     /// Buffer size for HTTP request reading
@@ -70,36 +73,13 @@ pub struct Config {
 }
 /// [`Config`] implementation of [`Default`]
 impl Default for Config {
-    /// Creates a default configuration with sensible values.
-    ///
-    /// # Default Values
-    ///
-    /// - Admin port: 15204
-    /// - Download port: 15205
-    /// - Admin host: 127.0.0.1 (localhost only)
-    /// - Download host: 0.0.0.0
-    /// - Base path: current directory
-    /// - Buffer size: 8KB
-    /// - Max request size: 10MB
-    /// - HTTPS: disabled
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use otd::Config;
-    ///
-    /// let config = Config::default();
-    /// assert_eq!(config.admin_port, 15204);
-    /// assert_eq!(config.download_port, 15205);
-    /// ```
     fn default() -> Self {
         Self {
             admin_port: 15204,
-            download_port: 15205,
-            // Admin defaults to loopback — the admin interface has no auth
-            // by default and must not be exposed to the network unprotected.
             admin_host: "127.0.0.1".into(),
+            download_port: 15205,
             download_host: "0.0.0.0".into(),
+            download_base_url: None,
             base_path: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into())
                 .unwrap_or_else(|_| "/tmp".into()),
@@ -245,11 +225,16 @@ impl Config {
     /// assert_eq!(base_url, "http://0.0.0.0:15205");
     /// ```
     pub fn download_base_url(&self) -> String {
-        let protocol = if self.enable_https { "https" } else { "http" };
-        format!(
-            "{}://{}:{}",
-            protocol, self.download_host, self.download_port
-        )
+        match &self.download_base_url {
+            Some(url) => return url.clone(),
+            None => {
+                let protocol = if self.enable_https { "https" } else { "http" };
+                format!(
+                    "{}://{}:{}",
+                    protocol, self.download_host, self.download_port
+                )
+            }
+        }
     }
 }
 
@@ -262,11 +247,9 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.admin_port, 15204);
         assert_eq!(config.download_port, 15205);
-        // Admin must default to loopback for safety.
         assert_eq!(config.admin_host, "127.0.0.1");
         assert_eq!(config.download_host, "0.0.0.0");
         assert!(!config.enable_https);
-        // No token by default — users should set one if exposing over network.
         assert!(config.admin_token.is_none());
     }
 

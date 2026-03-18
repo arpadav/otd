@@ -3,6 +3,8 @@
 //! This module implements a lightweight HTTP server using the `smol` async runtime.
 //! It provides dual-port functionality with separate servers for admin interface
 //! and download functionality.
+//!
+//! Author: aav
 // --------------------------------------------------
 // external
 // --------------------------------------------------
@@ -18,9 +20,9 @@ use std::{path::PathBuf, sync::Arc};
 ///
 /// # Returns
 ///
-/// - `Ok(Some(data))` — complete request bytes
-/// - `Ok(None)` — connection closed before any data was sent
-/// - `Err(_)` — I/O error or request exceeded `max_bytes`
+/// - `Ok(Some(data))` - complete request bytes
+/// - `Ok(None)` - connection closed before any data was sent
+/// - `Err(_)` - I/O error or request exceeded `max_bytes`
 async fn read_request<S>(
     stream: &mut S,
     max_bytes: usize,
@@ -100,7 +102,9 @@ fn parse_content_length(header_bytes: &[u8]) -> usize {
 /// }
 /// ```
 pub struct Server {
+    /// Server configuration loaded from file or defaults
     config: Config,
+    /// Handler instance that processes incoming requests for both servers
     handler: Handler,
 }
 
@@ -132,6 +136,7 @@ impl Server {
         // path if canonicalization fails (e.g., directory doesn't exist yet).
         let raw_path = PathBuf::from(&config.base_path);
         let base_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path);
+        std::fs::create_dir_all("/tmp/otd-cache").ok();
         let state = Arc::new(AppState::new(base_path));
         let handler = Handler::new(state, config.clone());
 
@@ -397,7 +402,7 @@ mod tests {
             String::from_utf8(large_body).unwrap()
         );
         let mut cursor = smol::io::Cursor::new(request.as_bytes().to_vec());
-        // Set max to 100 bytes — smaller than the request
+        // Set max to 100 bytes - smaller than the request
         let result = smol::block_on(read_request(&mut cursor, 100));
         assert!(result.is_err(), "Should error on oversized request");
     }
