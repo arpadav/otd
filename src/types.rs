@@ -15,6 +15,19 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32},
 };
 
+/// Tracks the lifecycle of a zip archive for a download item.
+#[derive(Debug)]
+pub enum ZipState {
+    /// Single-file download — no zip needed
+    NotNeeded,
+    /// Zip is being created in the background
+    Preparing,
+    /// Zip is ready and cached at the given path
+    Ready(PathBuf),
+    /// Zip creation failed
+    Failed(String),
+}
+
 #[derive(Debug)]
 /// Represents a downloadable item with one or more files/folders.
 ///
@@ -36,6 +49,8 @@ pub struct DownloadItem {
     pub expires_at: Option<std::time::Instant>,
     ///
     pub created_at: std::time::Instant,
+    /// Zip preparation state (interior-mutable; never held across .await)
+    pub zip_state: std::sync::RwLock<ZipState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -238,6 +253,7 @@ mod tests {
             download_count: AtomicU32::new(0),
             expires_at: None,
             created_at: std::time::Instant::now(),
+            zip_state: std::sync::RwLock::new(ZipState::NotNeeded),
         };
 
         assert_eq!(item.paths.len(), 1);
