@@ -136,6 +136,7 @@ impl Server {
         // path if canonicalization fails (e.g., directory doesn't exist yet).
         let raw_path = PathBuf::from(&config.base_path);
         let base_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path);
+        std::fs::create_dir_all("/tmp/otd-cache").ok();
         let state = Arc::new(AppState::new(base_path));
         let handler = Handler::new(state, config.clone());
 

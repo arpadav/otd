@@ -15,13 +15,157 @@ use crate::{config::Config, http::*, types::*};
 // --------------------------------------------------
 use std::{
     collections::HashMap,
+    hash::{Hash, Hasher},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
 use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
+
+/// Cache directory for pre-built zip archives.
+const ZIP_CACHE_DIR: &str = "/tmp/otd-cache";
+
+/// Computes a deterministic cache key from a set of paths.
+///
+/// Walks directories recursively, collects (canonical_path, mtime) for every file,
+/// sorts them, and produces a hex-encoded hash.
+fn compute_zip_cache_key(paths: &[PathBuf]) -> std::io::Result<String> {
+    let mut entries: Vec<(String, u64)> = Vec::new();
+
+    for path in paths {
+        if path.is_dir() {
+            for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_file() {
+                    let canonical = std::fs::canonicalize(entry.path())?;
+                    let mtime = std::fs::metadata(entry.path())?
+                        .modified()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    entries.push((canonical.to_string_lossy().into_owned(), mtime));
+                }
+            }
+        } else {
+            let canonical = std::fs::canonicalize(path)?;
+            let mtime = std::fs::metadata(path)?
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            entries.push((canonical.to_string_lossy().into_owned(), mtime));
+        }
+    }
+
+    entries.sort();
+
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (path, mtime) in &entries {
+        path.hash(&mut hasher);
+        mtime.hash(&mut hasher);
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+/// Creates a zip archive on disk from the given paths.
+fn create_zip_to_file(
+    paths: &[PathBuf],
+    output: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = std::fs::File::create(output)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+
+    for path in paths {
+        if path.is_dir() {
+            add_directory_to_zip(&mut zip, path, options)?;
+        } else {
+            add_file_to_zip(&mut zip, path, options)?;
+        }
+    }
+
+    zip.finish()?;
+    Ok(())
+}
+
+/// Adds a directory and its contents to a ZIP archive.
+fn add_directory_to_zip<W: Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    dir_path: &PathBuf,
+    options: FileOptions<()>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let dir_name = dir_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("folder");
+
+    for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
+        let entry_path = entry.path();
+        let relative_path = match entry_path.strip_prefix(dir_path) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        let zip_path = format!("{}/{}", dir_name, relative_path.to_string_lossy());
+
+        if entry.file_type().is_dir() {
+            if let Err(e) = zip.add_directory(&zip_path, options) {
+                tracing::error!("Failed to add directory to zip: {}", e);
+            }
+        } else {
+            if let Err(e) = zip.start_file(&zip_path, options) {
+                tracing::error!("Failed to start file in zip: {}", e);
+                continue;
+            }
+
+            let file_contents = match std::fs::read(entry_path) {
+                Ok(contents) => contents,
+                Err(e) => {
+                    tracing::error!("Failed to read file for zip: {}", e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = zip.write_all(&file_contents) {
+                tracing::error!("Failed to write file to zip: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Adds a single file to a ZIP archive.
+fn add_file_to_zip<W: Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    file_path: &PathBuf,
+    options: FileOptions<()>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let filename = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+
+    if let Err(e) = zip.start_file(filename, options) {
+        tracing::error!("Failed to start file in zip: {}", e);
+        return Err(Box::new(e));
+    }
+
+    let file_contents = std::fs::read(file_path)?;
+    if let Err(e) = zip.write_all(&file_contents) {
+        tracing::error!("Failed to write file to zip: {}", e);
+        return Err(Box::new(e));
+    }
+
+    Ok(())
+}
 
 /// Main request handler containing business logic for both admin and download servers.
 ///
@@ -560,17 +704,64 @@ impl Handler {
             .expires_in_seconds
             .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
 
+        let zip_state = if is_multi_file {
+            std::sync::RwLock::new(ZipState::Preparing)
+        } else {
+            std::sync::RwLock::new(ZipState::NotNeeded)
+        };
+
         let item = DownloadItem {
-            paths: full_paths,
+            paths: full_paths.clone(),
             is_multi_file,
             name: name.clone(),
             max_downloads,
             download_count: std::sync::atomic::AtomicU32::new(0),
             expires_at,
             created_at: std::time::Instant::now(),
+            zip_state,
         };
 
         self.state.tokens.write().await.insert(token.clone(), item);
+
+        // Spawn background zip creation for multi-file downloads
+        if is_multi_file {
+            let state = Arc::clone(&self.state);
+            let token_for_zip = token.clone();
+            let paths_for_zip = full_paths;
+            smol::spawn(async move {
+                let token_inner = token_for_zip.clone();
+                let result: Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> =
+                    smol::unblock(move || {
+                        let hash = compute_zip_cache_key(&paths_for_zip)?;
+                        let cache_path = PathBuf::from(format!("{ZIP_CACHE_DIR}/{hash}.zip"));
+
+                        if cache_path.exists() {
+                            tracing::info!("Zip cache hit for token {}: {:?}", token_inner, cache_path);
+                            return Ok(cache_path);
+                        }
+
+                        let tmp_path = cache_path.with_extension("zip.tmp");
+                        create_zip_to_file(&paths_for_zip, &tmp_path)?;
+                        std::fs::rename(&tmp_path, &cache_path)?;
+                        tracing::info!("Zip created for token {}: {:?}", token_inner, cache_path);
+                        Ok(cache_path)
+                    })
+                    .await;
+
+                let tokens = state.tokens.read().await;
+                if let Some(item) = tokens.get(&token_for_zip) {
+                    let mut zs = item.zip_state.write().unwrap();
+                    match result {
+                        Ok(path) => *zs = ZipState::Ready(path),
+                        Err(e) => {
+                            tracing::error!("Zip creation failed for token {}: {}", token_for_zip, e);
+                            *zs = ZipState::Failed(e.to_string());
+                        }
+                    }
+                }
+            })
+            .detach();
+        }
 
         // Create URL with filename for better wget/browser behavior
         let download_url = format!(
@@ -618,6 +809,15 @@ impl Handler {
                     None
                 }
             });
+            let zip_status = {
+                let zs = item.zip_state.read().unwrap();
+                match &*zs {
+                    ZipState::NotNeeded => "not_needed",
+                    ZipState::Preparing => "preparing",
+                    ZipState::Ready(_) => "ready",
+                    ZipState::Failed(_) => "failed",
+                }
+            };
             items.push(serde_json::json!({
                 "token": token,
                 "name": item.name,
@@ -628,7 +828,8 @@ impl Handler {
                 "expired": expired,
                 "expires_in_seconds": expires_in_seconds,
                 "download_url": download_url,
-                "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()
+                "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+                "zip_status": zip_status
             }));
         }
 
@@ -786,7 +987,43 @@ impl Handler {
         }
 
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
-            self.serve_as_zip(&item.paths, &item.name).await
+            // Read zip state and extract what we need without holding the guard across .await
+            enum ZipAction {
+                Preparing,
+                Ready(PathBuf),
+                Failed(String),
+                Fallback,
+            }
+            let action = {
+                let zs = item.zip_state.read().unwrap();
+                match &*zs {
+                    ZipState::Preparing => ZipAction::Preparing,
+                    ZipState::Ready(p) => ZipAction::Ready(p.clone()),
+                    ZipState::Failed(e) => ZipAction::Failed(e.clone()),
+                    ZipState::NotNeeded => ZipAction::Fallback,
+                }
+            };
+            let name = item.name.clone();
+            match action {
+                ZipAction::Preparing => {
+                    if self.state.one_time_enabled.load(Ordering::Acquire) {
+                        item.download_count.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    Ok(HttpResponse::new(202, "Accepted")
+                        .content_type(content_type::PLAIN_TEXT)
+                        .body_text("File is being prepared, please try again shortly"))
+                }
+                ZipAction::Ready(cache_path) => {
+                    self.serve_cached_zip(&cache_path, &name).await
+                }
+                ZipAction::Failed(err) => {
+                    Ok(HttpResponse::internal_server_error()
+                        .body_text(&format!("Zip creation failed: {err}")))
+                }
+                ZipAction::Fallback => {
+                    self.serve_as_zip(&item.paths, &name).await
+                }
+            }
         } else {
             self.serve_single_file(&item.paths[0]).await
         }
@@ -842,16 +1079,7 @@ impl Handler {
             .body_bytes(file_contents))
     }
 
-    /// Serves multiple files or folders as a ZIP archive.
-    ///
-    /// # Arguments
-    ///
-    /// * `paths` - List of file/folder paths to include
-    /// * `zip_name` - Name for the ZIP file
-    ///
-    /// # Returns
-    ///
-    /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - ZIP content or error
+    /// Serves multiple files or folders as a ZIP archive (fallback, in-memory).
     async fn serve_as_zip(
         &self,
         paths: &[PathBuf],
@@ -866,9 +1094,9 @@ impl Handler {
 
             for path in paths {
                 if path.is_dir() {
-                    self.add_directory_to_zip(&mut zip, path, options)?;
+                    add_directory_to_zip(&mut zip, path, options)?;
                 } else {
-                    self.add_file_to_zip(&mut zip, path, options)?;
+                    add_file_to_zip(&mut zip, path, options)?;
                 }
             }
 
@@ -892,102 +1120,32 @@ impl Handler {
             .body_bytes(zip_data))
     }
 
-    /// Adds a directory and its contents to a ZIP archive.
-    ///
-    /// # Arguments
-    ///
-    /// * `zip` - ZIP writer instance
-    /// * `dir_path` - Path to the directory to add
-    /// * `options` - ZIP file options
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), Box<dyn std::error::Error + Send + Sync>>` - Success or error
-    fn add_directory_to_zip(
+    /// Serves a cached zip file from disk.
+    async fn serve_cached_zip(
         &self,
-        zip: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-        dir_path: &PathBuf,
-        options: FileOptions<()>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let dir_name = dir_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("folder");
-
-        for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
-            let entry_path = entry.path();
-            let relative_path = match entry_path.strip_prefix(dir_path) {
-                Ok(path) => path,
-                Err(_) => continue,
-            };
-
-            if relative_path.as_os_str().is_empty() {
-                continue;
+        cache_path: &Path,
+        zip_name: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let file_contents = match std::fs::read(cache_path) {
+            Ok(contents) => contents,
+            Err(e) => {
+                tracing::error!("Failed to read cached zip {:?}: {}", cache_path, e);
+                return Ok(
+                    HttpResponse::internal_server_error().body_text("Failed to read cached file")
+                );
             }
+        };
 
-            let zip_path = format!("{}/{}", dir_name, relative_path.to_string_lossy());
+        let final_name = if zip_name.ends_with(".zip") {
+            zip_name.to_string()
+        } else {
+            format!("{zip_name}.zip")
+        };
 
-            if entry.file_type().is_dir() {
-                if let Err(e) = zip.add_directory(&zip_path, options) {
-                    tracing::error!("Failed to add directory to zip: {}", e);
-                }
-            } else {
-                if let Err(e) = zip.start_file(&zip_path, options) {
-                    tracing::error!("Failed to start file in zip: {}", e);
-                    continue;
-                }
-
-                let file_contents = match std::fs::read(entry_path) {
-                    Ok(contents) => contents,
-                    Err(e) => {
-                        tracing::error!("Failed to read file for zip: {}", e);
-                        continue;
-                    }
-                };
-
-                if let Err(e) = zip.write_all(&file_contents) {
-                    tracing::error!("Failed to write file to zip: {}", e);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Adds a single file to a ZIP archive.
-    ///
-    /// # Arguments
-    ///
-    /// * `zip` - ZIP writer instance
-    /// * `file_path` - Path to the file to add
-    /// * `options` - ZIP file options
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), Box<dyn std::error::Error + Send + Sync>>` - Success or error
-    fn add_file_to_zip(
-        &self,
-        zip: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-        file_path: &PathBuf,
-        options: FileOptions<()>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let filename = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("file");
-
-        if let Err(e) = zip.start_file(filename, options) {
-            tracing::error!("Failed to start file in zip: {}", e);
-            return Err(Box::new(e));
-        }
-
-        let file_contents = std::fs::read(file_path)?;
-        if let Err(e) = zip.write_all(&file_contents) {
-            tracing::error!("Failed to write file to zip: {}", e);
-            return Err(Box::new(e));
-        }
-
-        Ok(())
+        Ok(HttpResponse::ok()
+            .content_type(content_type::ZIP)
+            .content_disposition(&format!("attachment; filename=\"{final_name}\""))
+            .body_bytes(file_contents))
     }
 
     /// Returns the HTML interface with configuration placeholders replaced.
