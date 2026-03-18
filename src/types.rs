@@ -2,7 +2,11 @@
 //!
 //! This module defines the main data structures used throughout the application,
 //! including download items, request/response types, and shared application state.
-
+//!
+//! Author: aav
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use serde::{Deserialize, Serialize};
 use smol::lock::RwLock;
 use std::{
@@ -11,22 +15,30 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32},
 };
 
+#[derive(Debug)]
 /// Represents a downloadable item with one or more files/folders.
 ///
 /// Each download item is associated with a unique token and can contain
-/// multiple paths that will be served as a single download (ZIP for multiple items).
+/// multiple paths that will be served as a single download (zip for multiple items).
 ///
-#[derive(Debug)]
 pub struct DownloadItem {
+    /// List of file/folder paths included in this download
     pub paths: Vec<PathBuf>,
+    /// Whether this download contains multiple files/folders (true if paths.len() > 1)
     pub is_multi_file: bool,
+    /// Display name for the download (e.g., "my-files.zip" or "document.pdf")
     pub name: String,
+    /// Maximum allowed downloads before the link becomes invalid
     pub max_downloads: u32,
+    /// Current download count for this item
     pub download_count: AtomicU32,
+    /// Optional expiration time for the download link (None if it does not expire)
     pub expires_at: Option<std::time::Instant>,
+    ///
     pub created_at: std::time::Instant,
 }
 
+#[derive(Debug, Deserialize)]
 /// Query parameters for download requests.
 ///
 /// Used to parse the `?k=<token>` parameter from download URLs.
@@ -40,12 +52,12 @@ pub struct DownloadItem {
 ///     k: "550e8400-e29b-41d4-a716-446655440000".to_string(),
 /// };
 /// ```
-#[derive(Debug, Deserialize)]
 pub struct DownloadQuery {
     /// The unique token identifying the download
     pub k: String,
 }
 
+#[derive(Debug, Deserialize)]
 /// Request payload for generating new download links.
 ///
 /// Contains the list of file paths to include and an optional custom name.
@@ -64,7 +76,6 @@ pub struct DownloadQuery {
 ///
 /// assert_eq!(request.paths.len(), 2);
 /// ```
-#[derive(Debug, Deserialize)]
 pub struct GenerateRequest {
     pub paths: Vec<String>,
     pub name: Option<String>,
@@ -72,6 +83,7 @@ pub struct GenerateRequest {
     pub expires_in_seconds: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
 /// Represents a file or folder in the file browser.
 ///
 /// Used in API responses to display directory contents in the web interface.
@@ -88,7 +100,6 @@ pub struct GenerateRequest {
 ///     size: Some(1024),
 /// };
 /// ```
-#[derive(Debug, Serialize)]
 pub struct FileItem {
     /// Display name of the file/folder
     pub name: String,
@@ -100,6 +111,7 @@ pub struct FileItem {
     pub size: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
 /// Response payload when a download link is successfully generated.
 ///
 /// Contains the unique token and the full download URL.
@@ -114,7 +126,6 @@ pub struct FileItem {
 ///     download_url: "http://localhost:15205/my-file.txt?k=550e8400-e29b-41d4-a716-446655440000".to_string(),
 /// };
 /// ```
-#[derive(Debug, Serialize)]
 pub struct GenerateResponse {
     /// Unique identifier for this download
     pub token: String,
@@ -122,6 +133,7 @@ pub struct GenerateResponse {
     pub download_url: String,
 }
 
+#[derive(Debug, Serialize)]
 /// Represents a staged file in the web interface.
 ///
 /// Used to track files that have been selected but not yet turned into a download link.
@@ -138,7 +150,6 @@ pub struct GenerateResponse {
 ///     size: Some(2048),
 /// };
 /// ```
-#[derive(Debug, Serialize)]
 pub struct StagedFile {
     /// Relative path from the base directory
     pub path: String,
