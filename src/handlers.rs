@@ -3,17 +3,169 @@
 //! This module contains the main business logic for handling HTTP requests,
 //! including file browsing, download link generation, and file serving.
 //! It implements a clean separation between admin and download functionality.
-
+//!
+//! Author: aav
+// --------------------------------------------------
+// local
+// --------------------------------------------------
 use crate::{config::Config, http::*, types::*};
+
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use std::{
     collections::HashMap,
+    hash::{Hash, Hasher},
     io::Write,
-    path::PathBuf,
-    sync::{atomic::Ordering, Arc},
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::Ordering},
 };
 use uuid::Uuid;
 use walkdir::WalkDir;
 use zip::write::FileOptions;
+
+/// Cache directory for pre-built zip archives.
+const ZIP_CACHE_DIR: &str = "/tmp/otd-cache";
+
+/// Computes a deterministic cache key from a set of paths.
+///
+/// Walks directories recursively, collects (canonical_path, mtime) for every file,
+/// sorts them, and produces a hex-encoded hash.
+fn compute_zip_cache_key(paths: &[PathBuf]) -> std::io::Result<String> {
+    let mut entries: Vec<(String, u64)> = Vec::new();
+
+    for path in paths {
+        if path.is_dir() {
+            for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+                if entry.file_type().is_file() {
+                    let canonical = std::fs::canonicalize(entry.path())?;
+                    let mtime = std::fs::metadata(entry.path())?
+                        .modified()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    entries.push((canonical.to_string_lossy().into_owned(), mtime));
+                }
+            }
+        } else {
+            let canonical = std::fs::canonicalize(path)?;
+            let mtime = std::fs::metadata(path)?
+                .modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+            entries.push((canonical.to_string_lossy().into_owned(), mtime));
+        }
+    }
+
+    entries.sort();
+
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (path, mtime) in &entries {
+        path.hash(&mut hasher);
+        mtime.hash(&mut hasher);
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+/// Creates a zip archive on disk from the given paths.
+fn create_zip_to_file(
+    paths: &[PathBuf],
+    output: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = std::fs::File::create(output)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o755);
+
+    for path in paths {
+        if path.is_dir() {
+            add_directory_to_zip(&mut zip, path, options)?;
+        } else {
+            add_file_to_zip(&mut zip, path, options)?;
+        }
+    }
+
+    zip.finish()?;
+    Ok(())
+}
+
+/// Adds a directory and its contents to a ZIP archive.
+fn add_directory_to_zip<W: Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    dir_path: &PathBuf,
+    options: FileOptions<()>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let dir_name = dir_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("folder");
+
+    for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
+        let entry_path = entry.path();
+        let relative_path = match entry_path.strip_prefix(dir_path) {
+            Ok(path) => path,
+            Err(_) => continue,
+        };
+
+        if relative_path.as_os_str().is_empty() {
+            continue;
+        }
+
+        let zip_path = format!("{}/{}", dir_name, relative_path.to_string_lossy());
+
+        if entry.file_type().is_dir() {
+            if let Err(e) = zip.add_directory(&zip_path, options) {
+                tracing::error!("Failed to add directory to zip: {}", e);
+            }
+        } else {
+            if let Err(e) = zip.start_file(&zip_path, options) {
+                tracing::error!("Failed to start file in zip: {}", e);
+                continue;
+            }
+
+            let file_contents = match std::fs::read(entry_path) {
+                Ok(contents) => contents,
+                Err(e) => {
+                    tracing::error!("Failed to read file for zip: {}", e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = zip.write_all(&file_contents) {
+                tracing::error!("Failed to write file to zip: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Adds a single file to a ZIP archive.
+fn add_file_to_zip<W: Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    file_path: &PathBuf,
+    options: FileOptions<()>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let filename = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file");
+
+    if let Err(e) = zip.start_file(filename, options) {
+        tracing::error!("Failed to start file in zip: {}", e);
+        return Err(Box::new(e));
+    }
+
+    let file_contents = std::fs::read(file_path)?;
+    if let Err(e) = zip.write_all(&file_contents) {
+        tracing::error!("Failed to write file to zip: {}", e);
+        return Err(Box::new(e));
+    }
+
+    Ok(())
+}
 
 /// Main request handler containing business logic for both admin and download servers.
 ///
@@ -37,7 +189,7 @@ pub struct Handler {
     /// Server configuration including ports, paths, and security settings
     pub config: Config,
 }
-
+/// [`Handler`] implementation
 impl Handler {
     /// Creates a new handler with the given state and configuration.
     ///
@@ -64,6 +216,7 @@ impl Handler {
     ///
     /// This method routes admin requests to appropriate handlers based on the
     /// HTTP method and path. It supports:
+    ///
     /// - GET / - Web interface
     /// - GET /api/browse - File browsing
     /// - POST /api/generate - Link generation
@@ -92,52 +245,55 @@ impl Handler {
     /// let response = handler.handle_admin_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_admin_request(&self, request: &str, peer_addr: std::net::SocketAddr) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn handle_admin_request(
+        &self,
+        request: &str,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
-        
         match req.parse(request.as_bytes()) {
             Ok(_) => {
-                // Bearer token authentication — enforced when admin_token is configured.
+                // Bearer token authentication - enforced when admin_token is configured.
                 if let Some(ref expected_token) = self.config.admin_token {
-                    let auth_header = req.headers.iter().find(|h| {
-                        h.name.eq_ignore_ascii_case("Authorization")
-                    });
+                    let auth_header = req
+                        .headers
+                        .iter()
+                        .find(|h| h.name.eq_ignore_ascii_case("Authorization"));
                     let authorized = auth_header
                         .and_then(|h| std::str::from_utf8(h.value).ok())
                         .and_then(|v| v.strip_prefix("Bearer "))
                         .map(|token| token.trim() == expected_token.as_str())
                         .unwrap_or(false);
                     if !authorized {
-                        tracing::warn!("Admin request rejected: missing or invalid Authorization header");
+                        tracing::warn!(
+                            "Admin request rejected: missing or invalid Authorization header"
+                        );
                         return Ok(HttpResponse::new(401, "Unauthorized")
                             .header("WWW-Authenticate", "Bearer realm=\"otd-admin\"")
                             .body_text("Unauthorized")
                             .to_bytes());
                     }
                 }
-
                 let method = req.method.unwrap_or("GET");
                 let path = req.path.unwrap_or("/");
-                
                 tracing::info!("Admin request: {} {}", method, path);
-                
                 let (path, query) = if let Some(pos) = path.find('?') {
                     (&path[..pos], &path[pos + 1..])
                 } else {
                     (path, "")
                 };
-
                 tracing::info!("Parsed path: '{}', query: '{}'", path, query);
-
-                // --- Loopback / session auth ---
                 let is_loopback = peer_addr.ip().is_loopback();
                 if !is_loopback {
                     // Check if admin_password is configured
                     if self.config.admin_password.is_none() {
                         let html = include_str!("../static/login.html")
                             .replace("{{TAILWIND_CSS}}", include_str!("../static/style.css"))
-                            .replace("{{MESSAGE}}", "External access requires admin_password to be set in config.");
+                            .replace(
+                                "{{MESSAGE}}",
+                                "External access requires admin_password to be set in config.",
+                            );
                         return Ok(HttpResponse::new(403, "Forbidden")
                             .content_type(content_type::HTML)
                             .body_text(&html)
@@ -148,12 +304,15 @@ impl Handler {
                     let is_login_route = path == "/login";
                     if !is_login_route {
                         // Check session cookie
-                        let cookie_header = req.headers.iter()
+                        let cookie_header = req
+                            .headers
+                            .iter()
                             .find(|h| h.name.eq_ignore_ascii_case("Cookie"))
                             .and_then(|h| std::str::from_utf8(h.value).ok())
                             .unwrap_or("");
-                        
-                        let session_token = cookie_header.split(';')
+
+                        let session_token = cookie_header
+                            .split(';')
                             .map(|s| s.trim())
                             .find(|s| s.starts_with("otd_session="))
                             .and_then(|s| s.strip_prefix("otd_session="));
@@ -162,7 +321,8 @@ impl Handler {
                         if let Some(token) = session_token {
                             let sessions = self.state.sessions.read().await;
                             if let Some(created) = sessions.get(token)
-                                && created.elapsed() < std::time::Duration::from_secs(24 * 60 * 60) {
+                                && created.elapsed() < std::time::Duration::from_secs(24 * 60 * 60)
+                            {
                                 valid_session = true;
                             }
                         }
@@ -170,7 +330,7 @@ impl Handler {
                         // Clean up expired sessions (best-effort, don't block)
                         if !valid_session {
                             let mut sessions = self.state.sessions.write().await;
-                            let max_age = std::time::Duration::from_secs(24 * 60 * 60);
+                            let max_age = std::time::Duration::from_hours(24);
                             sessions.retain(|_, created| created.elapsed() < max_age);
                         }
 
@@ -194,11 +354,15 @@ impl Handler {
                         let body = self.extract_body(request)?;
                         let params = self.parse_query(&body);
                         let password = params.get("password").cloned().unwrap_or_default();
-                        
+
                         let expected = self.config.admin_password.as_deref().unwrap_or("");
                         if !expected.is_empty() && password == expected {
                             let token = Uuid::new_v4().to_string();
-                            self.state.sessions.write().await.insert(token.clone(), std::time::Instant::now());
+                            self.state
+                                .sessions
+                                .write()
+                                .await
+                                .insert(token.clone(), std::time::Instant::now());
                             return Ok(HttpResponse::redirect("/")
                                 .header("Set-Cookie", &format!("otd_session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400", token))
                                 .to_bytes());
@@ -214,6 +378,19 @@ impl Handler {
                     }
                 }
 
+                // Extract session cookie for use in route handlers (e.g. logout)
+                let session_cookie = req
+                    .headers
+                    .iter()
+                    .find(|h| h.name.eq_ignore_ascii_case("Cookie"))
+                    .and_then(|h| std::str::from_utf8(h.value).ok())
+                    .unwrap_or("")
+                    .split(';')
+                    .map(|s| s.trim())
+                    .find(|s| s.starts_with("otd_session="))
+                    .and_then(|s| s.strip_prefix("otd_session="))
+                    .map(|s| s.to_string());
+
                 let response = match (method, path) {
                     ("GET", "/") => self.web_interface().await?,
                     ("GET", "/about") => self.about_page().await?,
@@ -223,21 +400,29 @@ impl Handler {
                     ("POST", "/api/generate") => {
                         let body = self.extract_body(request)?;
                         self.generate_link(&body).await?
-                    },
+                    }
                     ("POST", "/api/tokens/bulk-delete") => {
                         let body = self.extract_body(request)?;
                         self.bulk_delete_tokens(&body).await?
-                    },
+                    }
                     ("DELETE", path) if path.starts_with("/api/tokens/") => {
                         let token = path.strip_prefix("/api/tokens/").unwrap_or("");
                         self.delete_token(token).await?
                     }
                     ("GET", "/logout") => {
-                        HttpResponse::redirect("/login")
-                            .header("Set-Cookie", "otd_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+                        // Invalidate session server-side before clearing cookie
+                        if let Some(ref token) = session_cookie {
+                            self.state.sessions.write().await.remove(token);
+                            tracing::info!("Session invalidated on logout");
+                        }
+                        HttpResponse::redirect("/login").header(
+                            "Set-Cookie",
+                            "otd_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+                        )
                     }
                     ("GET", path) if path.starts_with("/config/one-time/") => {
-                        let enabled = path.strip_prefix("/config/one-time/")
+                        let enabled = path
+                            .strip_prefix("/config/one-time/")
                             .and_then(|s| s.parse::<bool>().ok())
                             .unwrap_or(true);
                         self.config_one_time(enabled).await?
@@ -283,15 +468,18 @@ impl Handler {
     /// let response = handler.handle_download_request(request).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_download_request(&self, request: &str) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn handle_download_request(
+        &self,
+        request: &str,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
-        
+
         match req.parse(request.as_bytes()) {
             Ok(_) => {
                 let method = req.method.unwrap_or("GET");
                 let path = req.path.unwrap_or("/");
-                
+
                 let (path, query) = if let Some(pos) = path.find('?') {
                     (&path[..pos], &path[pos + 1..])
                 } else {
@@ -321,7 +509,9 @@ impl Handler {
     /// # Returns
     ///
     /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - HTML response or error
-    async fn web_interface(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn web_interface(
+        &self,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let html = self.get_updated_html();
         Ok(HttpResponse::ok()
             .content_type(content_type::HTML)
@@ -354,10 +544,13 @@ impl Handler {
     ///
     /// This method validates that all requested paths are within the configured
     /// base directory to prevent directory traversal attacks.
-    async fn browse(&self, query: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn browse(
+        &self,
+        query: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let params = self.parse_query(query);
         let path = params.get("path").map(|s| s.as_str()).unwrap_or("");
-        
+
         let full_path = if path.is_empty() {
             self.state.base_path.clone()
         } else {
@@ -379,7 +572,8 @@ impl Handler {
         // Add parent directory if not at root
         if full_path != self.state.base_path
             && let Some(parent) = full_path.parent()
-            && parent.starts_with(&self.state.base_path) {
+            && parent.starts_with(&self.state.base_path)
+        {
             let relative_parent = parent
                 .strip_prefix(&self.state.base_path)
                 .map(|p| p.to_string_lossy().to_string())
@@ -396,11 +590,11 @@ impl Handler {
             Ok(entries) => {
                 tracing::info!("Successfully read directory: {full_path:?}");
                 entries
-            },
+            }
             Err(e) => {
                 tracing::error!("Failed to read directory {full_path:?}: {e}");
                 return Ok(HttpResponse::not_found());
-            },
+            }
         };
 
         for entry in entries.flatten() {
@@ -453,64 +647,129 @@ impl Handler {
     ///
     /// Generated URLs follow the format: `http://host:port/filename.ext?k=<token>`
     /// This ensures wget saves files with the correct name instead of generic names.
-    async fn generate_link(&self, body: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn generate_link(
+        &self,
+        body: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let generate_req: GenerateRequest = serde_json::from_str(body)?;
-        
+
         if generate_req.paths.is_empty() {
             return Ok(HttpResponse::bad_request().body_text("No paths provided"));
         }
 
         let mut full_paths = Vec::new();
-        
-        // Validate all paths — safe_join canonicalizes and checks containment,
+
+        // Validate all paths - safe_join canonicalizes and checks containment,
         // blocking both `../` traversal and symlink-based escapes.
         for path_str in &generate_req.paths {
             match self.safe_join(path_str) {
                 Some(full_path) => full_paths.push(full_path),
                 None => {
-                    tracing::warn!("Generate: path traversal/symlink escape blocked for '{path_str}'");
+                    tracing::warn!(
+                        "Generate: path traversal/symlink escape blocked for '{path_str}'"
+                    );
                     return Ok(HttpResponse::forbidden());
                 }
             }
         }
 
         let token = Uuid::new_v4().to_string();
-        let is_multi_file = full_paths.len() > 1 || (full_paths.len() == 1 && full_paths[0].is_dir());
-        
+        let is_multi_file =
+            full_paths.len() > 1 || (full_paths.len() == 1 && full_paths[0].is_dir());
+
         // Determine the name
         let name = if let Some(custom_name) = generate_req.name {
             custom_name
         } else if full_paths.len() == 1 {
             let path = &full_paths[0];
             if path.is_dir() {
-                format!("{}.zip", path.file_name().and_then(|n| n.to_str()).unwrap_or("folder"))
+                format!(
+                    "{}.zip",
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("folder")
+                )
             } else {
-                path.file_name().and_then(|n| n.to_str()).unwrap_or("download").to_string()
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("download")
+                    .to_string()
             }
         } else {
             "output.zip".to_string()
         };
 
         let max_downloads = generate_req.max_downloads.unwrap_or(1).max(1);
-        let expires_at = generate_req.expires_in_seconds.map(|secs| {
-            std::time::Instant::now() + std::time::Duration::from_secs(secs)
-        });
+        let expires_at = generate_req
+            .expires_in_seconds
+            .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
+
+        let zip_state = if is_multi_file {
+            std::sync::RwLock::new(ZipState::Preparing)
+        } else {
+            std::sync::RwLock::new(ZipState::NotNeeded)
+        };
 
         let item = DownloadItem {
-            paths: full_paths,
+            paths: full_paths.clone(),
             is_multi_file,
             name: name.clone(),
             max_downloads,
             download_count: std::sync::atomic::AtomicU32::new(0),
             expires_at,
             created_at: std::time::Instant::now(),
+            zip_state,
         };
 
         self.state.tokens.write().await.insert(token.clone(), item);
 
+        // Spawn background zip creation for multi-file downloads
+        if is_multi_file {
+            let state = Arc::clone(&self.state);
+            let token_for_zip = token.clone();
+            let paths_for_zip = full_paths;
+            smol::spawn(async move {
+                let token_inner = token_for_zip.clone();
+                let result: Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> =
+                    smol::unblock(move || {
+                        let hash = compute_zip_cache_key(&paths_for_zip)?;
+                        let cache_path = PathBuf::from(format!("{ZIP_CACHE_DIR}/{hash}.zip"));
+
+                        if cache_path.exists() {
+                            tracing::info!("Zip cache hit for token {}: {:?}", token_inner, cache_path);
+                            return Ok(cache_path);
+                        }
+
+                        let tmp_path = cache_path.with_extension("zip.tmp");
+                        create_zip_to_file(&paths_for_zip, &tmp_path)?;
+                        std::fs::rename(&tmp_path, &cache_path)?;
+                        tracing::info!("Zip created for token {}: {:?}", token_inner, cache_path);
+                        Ok(cache_path)
+                    })
+                    .await;
+
+                let tokens = state.tokens.read().await;
+                if let Some(item) = tokens.get(&token_for_zip) {
+                    let mut zs = item.zip_state.write().unwrap();
+                    match result {
+                        Ok(path) => *zs = ZipState::Ready(path),
+                        Err(e) => {
+                            tracing::error!("Zip creation failed for token {}: {}", token_for_zip, e);
+                            *zs = ZipState::Failed(e.to_string());
+                        }
+                    }
+                }
+            })
+            .detach();
+        }
+
         // Create URL with filename for better wget/browser behavior
-        let download_url = format!("{}/{}?k={}", self.config.download_base_url(), 
-                                 self.url_encode(&name), token);
+        let download_url = format!(
+            "{}/{}?k={}",
+            self.config.download_base_url(),
+            self.url_encode(&name),
+            token
+        );
         tracing::info!("Generated download link for '{}': {}", name, token);
 
         let response = GenerateResponse {
@@ -535,13 +794,30 @@ impl Handler {
 
         let now = std::time::Instant::now();
         for (token, item) in tokens.iter() {
-            let download_url = format!("{}/{}?k={}", self.config.download_base_url(), 
-                                     self.url_encode(&item.name), token);
+            let download_url = format!(
+                "{}/{}?k={}",
+                self.config.download_base_url(),
+                self.url_encode(&item.name),
+                token
+            );
             let count = item.download_count.load(Ordering::Relaxed);
             let expired = item.expires_at.map(|e| now >= e).unwrap_or(false);
             let expires_in_seconds = item.expires_at.and_then(|e| {
-                if now < e { Some(e.duration_since(now).as_secs()) } else { None }
+                if now < e {
+                    Some(e.duration_since(now).as_secs())
+                } else {
+                    None
+                }
             });
+            let zip_status = {
+                let zs = item.zip_state.read().unwrap();
+                match &*zs {
+                    ZipState::NotNeeded => "not_needed",
+                    ZipState::Preparing => "preparing",
+                    ZipState::Ready(_) => "ready",
+                    ZipState::Failed(_) => "failed",
+                }
+            };
             items.push(serde_json::json!({
                 "token": token,
                 "name": item.name,
@@ -552,7 +828,8 @@ impl Handler {
                 "expired": expired,
                 "expires_in_seconds": expires_in_seconds,
                 "download_url": download_url,
-                "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()
+                "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+                "zip_status": zip_status
             }));
         }
 
@@ -605,9 +882,14 @@ impl Handler {
     // --------------------------------------------------
 
     /// Deletes tokens matching a filter: "used", "expired", or "all".
-    async fn bulk_delete_tokens(&self, body: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn bulk_delete_tokens(
+        &self,
+        body: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         #[derive(serde::Deserialize)]
-        struct BulkDeleteRequest { filter: String }
+        struct BulkDeleteRequest {
+            filter: String,
+        }
 
         let req: BulkDeleteRequest = serde_json::from_str(body)?;
         let mut tokens = self.state.tokens.write().await;
@@ -627,13 +909,22 @@ impl Handler {
         });
 
         let removed = before - tokens.len();
-        tracing::info!("Bulk delete (filter={}): removed {} tokens", req.filter, removed);
+        tracing::info!(
+            "Bulk delete (filter={}): removed {} tokens",
+            req.filter,
+            removed
+        );
 
-        HttpResponse::ok().body_json(&serde_json::json!({ "removed": removed })).map_err(Into::into)
+        HttpResponse::ok()
+            .body_json(&serde_json::json!({ "removed": removed }))
+            .map_err(Into::into)
     }
 
     /// Deletes a download token.
-    async fn delete_token(&self, token: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn delete_token(
+        &self,
+        token: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let mut tokens = self.state.tokens.write().await;
         if tokens.remove(token).is_some() {
             tracing::info!("Deleted token: {}", token);
@@ -662,7 +953,10 @@ impl Handler {
     ///
     /// If one-time usage is enabled, the download token is marked as used
     /// after the first successful download attempt.
-    async fn download(&self, query: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn download(
+        &self,
+        query: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let params = self.parse_query(query);
         let token = match params.get("k") {
             Some(token) => token,
@@ -677,7 +971,8 @@ impl Handler {
 
         // Check expiry
         if let Some(expires_at) = item.expires_at
-            && std::time::Instant::now() >= expires_at {
+            && std::time::Instant::now() >= expires_at
+        {
             return Ok(HttpResponse::gone().body_text("Download link has expired"));
         }
 
@@ -692,7 +987,43 @@ impl Handler {
         }
 
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
-            self.serve_as_zip(&item.paths, &item.name).await
+            // Read zip state and extract what we need without holding the guard across .await
+            enum ZipAction {
+                Preparing,
+                Ready(PathBuf),
+                Failed(String),
+                Fallback,
+            }
+            let action = {
+                let zs = item.zip_state.read().unwrap();
+                match &*zs {
+                    ZipState::Preparing => ZipAction::Preparing,
+                    ZipState::Ready(p) => ZipAction::Ready(p.clone()),
+                    ZipState::Failed(e) => ZipAction::Failed(e.clone()),
+                    ZipState::NotNeeded => ZipAction::Fallback,
+                }
+            };
+            let name = item.name.clone();
+            match action {
+                ZipAction::Preparing => {
+                    if self.state.one_time_enabled.load(Ordering::Acquire) {
+                        item.download_count.fetch_sub(1, Ordering::AcqRel);
+                    }
+                    Ok(HttpResponse::new(202, "Accepted")
+                        .content_type(content_type::PLAIN_TEXT)
+                        .body_text("File is being prepared, please try again shortly"))
+                }
+                ZipAction::Ready(cache_path) => {
+                    self.serve_cached_zip(&cache_path, &name).await
+                }
+                ZipAction::Failed(err) => {
+                    Ok(HttpResponse::internal_server_error()
+                        .body_text(&format!("Zip creation failed: {err}")))
+                }
+                ZipAction::Fallback => {
+                    self.serve_as_zip(&item.paths, &name).await
+                }
+            }
         } else {
             self.serve_single_file(&item.paths[0]).await
         }
@@ -707,8 +1038,13 @@ impl Handler {
     /// # Returns
     ///
     /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - Success message or error
-    async fn config_one_time(&self, enabled: bool) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        self.state.one_time_enabled.store(enabled, Ordering::Relaxed);
+    async fn config_one_time(
+        &self,
+        enabled: bool,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        self.state
+            .one_time_enabled
+            .store(enabled, Ordering::Relaxed);
         Ok(HttpResponse::ok()
             .content_type(content_type::PLAIN_TEXT)
             .body_text("Configuration updated"))
@@ -723,7 +1059,10 @@ impl Handler {
     /// # Returns
     ///
     /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - File content or error
-    async fn serve_single_file(&self, path: &PathBuf) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    async fn serve_single_file(
+        &self,
+        path: &PathBuf,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let file_contents = match std::fs::read(path) {
             Ok(contents) => contents,
             Err(e) => {
@@ -733,24 +1072,19 @@ impl Handler {
         };
 
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-        
+
         Ok(HttpResponse::ok()
             .content_type(content_type::OCTET_STREAM)
             .content_disposition(&format!("attachment; filename=\"{filename}\""))
             .body_bytes(file_contents))
     }
 
-    /// Serves multiple files or folders as a ZIP archive.
-    ///
-    /// # Arguments
-    ///
-    /// * `paths` - List of file/folder paths to include
-    /// * `zip_name` - Name for the ZIP file
-    ///
-    /// # Returns
-    ///
-    /// * `Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>` - ZIP content or error
-    async fn serve_as_zip(&self, paths: &[PathBuf], zip_name: &str) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+    /// Serves multiple files or folders as a ZIP archive (fallback, in-memory).
+    async fn serve_as_zip(
+        &self,
+        paths: &[PathBuf],
+        zip_name: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let mut zip_data = Vec::new();
         {
             let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_data));
@@ -760,15 +1094,17 @@ impl Handler {
 
             for path in paths {
                 if path.is_dir() {
-                    self.add_directory_to_zip(&mut zip, path, options)?;
+                    add_directory_to_zip(&mut zip, path, options)?;
                 } else {
-                    self.add_file_to_zip(&mut zip, path, options)?;
+                    add_file_to_zip(&mut zip, path, options)?;
                 }
             }
 
             if let Err(e) = zip.finish() {
                 tracing::error!("Failed to finish zip: {}", e);
-                return Ok(HttpResponse::internal_server_error().body_text("Failed to create zip file"));
+                return Ok(
+                    HttpResponse::internal_server_error().body_text("Failed to create zip file")
+                );
             }
         }
 
@@ -784,96 +1120,32 @@ impl Handler {
             .body_bytes(zip_data))
     }
 
-    /// Adds a directory and its contents to a ZIP archive.
-    ///
-    /// # Arguments
-    ///
-    /// * `zip` - ZIP writer instance
-    /// * `dir_path` - Path to the directory to add
-    /// * `options` - ZIP file options
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), Box<dyn std::error::Error + Send + Sync>>` - Success or error
-    fn add_directory_to_zip(
+    /// Serves a cached zip file from disk.
+    async fn serve_cached_zip(
         &self,
-        zip: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-        dir_path: &PathBuf,
-        options: FileOptions<()>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let dir_name = dir_path.file_name().and_then(|n| n.to_str()).unwrap_or("folder");
-        
-        for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
-            let entry_path = entry.path();
-            let relative_path = match entry_path.strip_prefix(dir_path) {
-                Ok(path) => path,
-                Err(_) => continue,
-            };
-
-            if relative_path.as_os_str().is_empty() {
-                continue;
+        cache_path: &Path,
+        zip_name: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let file_contents = match std::fs::read(cache_path) {
+            Ok(contents) => contents,
+            Err(e) => {
+                tracing::error!("Failed to read cached zip {:?}: {}", cache_path, e);
+                return Ok(
+                    HttpResponse::internal_server_error().body_text("Failed to read cached file")
+                );
             }
+        };
 
-            let zip_path = format!("{}/{}", dir_name, relative_path.to_string_lossy());
+        let final_name = if zip_name.ends_with(".zip") {
+            zip_name.to_string()
+        } else {
+            format!("{zip_name}.zip")
+        };
 
-            if entry.file_type().is_dir() {
-                if let Err(e) = zip.add_directory(&zip_path, options) {
-                    tracing::error!("Failed to add directory to zip: {}", e);
-                }
-            } else {
-                if let Err(e) = zip.start_file(&zip_path, options) {
-                    tracing::error!("Failed to start file in zip: {}", e);
-                    continue;
-                }
-
-                let file_contents = match std::fs::read(entry_path) {
-                    Ok(contents) => contents,
-                    Err(e) => {
-                        tracing::error!("Failed to read file for zip: {}", e);
-                        continue;
-                    }
-                };
-
-                if let Err(e) = zip.write_all(&file_contents) {
-                    tracing::error!("Failed to write file to zip: {}", e);
-                }
-            }
-        }
-        
-        Ok(())
-    }
-
-    /// Adds a single file to a ZIP archive.
-    ///
-    /// # Arguments
-    ///
-    /// * `zip` - ZIP writer instance
-    /// * `file_path` - Path to the file to add
-    /// * `options` - ZIP file options
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(), Box<dyn std::error::Error + Send + Sync>>` - Success or error
-    fn add_file_to_zip(
-        &self,
-        zip: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
-        file_path: &PathBuf,
-        options: FileOptions<()>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-        
-        if let Err(e) = zip.start_file(filename, options) {
-            tracing::error!("Failed to start file in zip: {}", e);
-            return Err(Box::new(e));
-        }
-
-        let file_contents = std::fs::read(file_path)?;
-        if let Err(e) = zip.write_all(&file_contents) {
-            tracing::error!("Failed to write file to zip: {}", e);
-            return Err(Box::new(e));
-        }
-        
-        Ok(())
+        Ok(HttpResponse::ok()
+            .content_type(content_type::ZIP)
+            .content_disposition(&format!("attachment; filename=\"{final_name}\""))
+            .body_bytes(file_contents))
     }
 
     /// Returns the HTML interface with configuration placeholders replaced.
@@ -911,9 +1183,9 @@ impl Handler {
     /// # let config = Config::default();
     /// # let state = Arc::new(AppState::new(PathBuf::from("/files")));
     /// # let handler = Handler::new(state, config);
-    /// // Safe path — returns Some(canonical_path)
+    /// // Safe path - returns Some(canonical_path)
     /// let ok = handler.safe_join("subdir/file.txt");
-    /// // Traversal — returns None
+    /// // Traversal - returns None
     /// let bad = handler.safe_join("../../etc/passwd");
     /// assert!(bad.is_none());
     /// ```
@@ -948,10 +1220,7 @@ impl Handler {
         let mut params = HashMap::new();
         for pair in query.split('&') {
             if let Some((key, value)) = pair.split_once('=') {
-                params.insert(
-                    self.url_decode(key),
-                    self.url_decode(value),
-                );
+                params.insert(self.url_decode(key), self.url_decode(value));
             }
         }
         params
@@ -969,7 +1238,7 @@ impl Handler {
     fn url_decode(&self, input: &str) -> String {
         let mut result = String::new();
         let mut chars = input.chars();
-        
+
         while let Some(ch) = chars.next() {
             match ch {
                 '%' => {
@@ -990,7 +1259,7 @@ impl Handler {
                 _ => result.push(ch),
             }
         }
-        
+
         result
     }
 
@@ -1028,7 +1297,10 @@ impl Handler {
     /// # Returns
     ///
     /// * `Result<String, Box<dyn std::error::Error + Send + Sync>>` - Request body or error
-    fn extract_body(&self, request: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    fn extract_body(
+        &self,
+        request: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(body_start) = request.find("\r\n\r\n") {
             Ok(request[body_start + 4..].to_string())
         } else {
@@ -1102,10 +1374,14 @@ mod tests {
     fn test_admin_auth_disabled_allows_all() {
         let handler = make_handler_with_token(None);
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
+        let response =
+            smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         // Should NOT be 401
-        assert!(!response_str.contains("401 Unauthorized"), "Unexpected 401 when auth is disabled");
+        assert!(
+            !response_str.contains("401 Unauthorized"),
+            "Unexpected 401 when auth is disabled"
+        );
     }
 
     /// When token is configured, missing Authorization header returns 401.
@@ -1113,7 +1389,8 @@ mod tests {
     fn test_admin_auth_required_rejects_missing_header() {
         let handler = make_handler_with_token(Some("secret123"));
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
+        let response =
+            smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         assert!(response_str.contains("401 Unauthorized"));
         assert!(response_str.contains("WWW-Authenticate"));
@@ -1123,8 +1400,10 @@ mod tests {
     #[test]
     fn test_admin_auth_required_rejects_wrong_token() {
         let handler = make_handler_with_token(Some("secret123"));
-        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrongtoken\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
+        let request =
+            "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrongtoken\r\n\r\n";
+        let response =
+            smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
         assert!(response_str.contains("401 Unauthorized"));
     }
@@ -1133,10 +1412,15 @@ mod tests {
     #[test]
     fn test_admin_auth_required_accepts_correct_token() {
         let handler = make_handler_with_token(Some("secret123"));
-        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret123\r\n\r\n";
-        let response = smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
+        let request =
+            "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret123\r\n\r\n";
+        let response =
+            smol::block_on(handler.handle_admin_request(request, loopback_addr())).unwrap();
         let response_str = String::from_utf8_lossy(&response);
-        assert!(!response_str.contains("401 Unauthorized"), "Correct token should be accepted");
+        assert!(
+            !response_str.contains("401 Unauthorized"),
+            "Correct token should be accepted"
+        );
     }
 
     /// safe_join with a normal relative path returns the canonical path.
@@ -1163,7 +1447,7 @@ mod tests {
         let state = Arc::new(AppState::new(dir.path().to_path_buf()));
         let handler = Handler::new(state, config);
 
-        // Non-existent traversal path — canonicalize fails → None
+        // Non-existent traversal path - canonicalize fails → None
         assert!(handler.safe_join("../../../etc/passwd").is_none());
     }
 
@@ -1179,7 +1463,7 @@ mod tests {
         let state = Arc::new(AppState::new(dir.path().to_path_buf()));
         let handler = Handler::new(state, config);
 
-        // Must be blocked — /etc/passwd is outside the base dir
+        // Must be blocked - /etc/passwd is outside the base dir
         assert!(handler.safe_join("evil_link").is_none());
     }
 
@@ -1196,7 +1480,7 @@ mod tests {
         let state = Arc::new(AppState::new(dir.path().to_path_buf()));
         let handler = Handler::new(state, config);
 
-        // Should succeed — symlink resolves within base_path
+        // Should succeed - symlink resolves within base_path
         let result = handler.safe_join("link.txt");
         assert!(result.is_some());
         assert_eq!(result.unwrap(), real_file.canonicalize().unwrap());
@@ -1206,8 +1490,8 @@ mod tests {
     /// Two threads race to claim the same AtomicBool; exactly one must win.
     #[test]
     fn test_one_time_download_race_condition() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::thread;
 
         let downloaded = Arc::new(AtomicBool::new(false));

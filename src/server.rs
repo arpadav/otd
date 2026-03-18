@@ -3,7 +3,11 @@
 //! This module implements a lightweight HTTP server using the `smol` async runtime.
 //! It provides dual-port functionality with separate servers for admin interface
 //! and download functionality.
-
+//!
+//! Author: aav
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use crate::{config::Config, handlers::Handler, types::AppState};
 use smol::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 use std::{path::PathBuf, sync::Arc};
@@ -16,37 +20,39 @@ use std::{path::PathBuf, sync::Arc};
 ///
 /// # Returns
 ///
-/// - `Ok(Some(data))` — complete request bytes
-/// - `Ok(None)` — connection closed before any data was sent
-/// - `Err(_)` — I/O error or request exceeded `max_bytes`
-async fn read_request<S>(stream: &mut S, max_bytes: usize) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>
+/// - `Ok(Some(data))` - complete request bytes
+/// - `Ok(None)` - connection closed before any data was sent
+/// - `Err(_)` - I/O error or request exceeded `max_bytes`
+async fn read_request<S>(
+    stream: &mut S,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>
 where
     S: AsyncReadExt + Unpin,
 {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut tmp = [0u8; 4096];
-
     loop {
         let n = stream.read(&mut tmp).await?;
         if n == 0 {
             return Ok(if buf.is_empty() { None } else { Some(buf) });
         }
-
         if buf.len() + n > max_bytes {
             return Err(format!("Request exceeds maximum size of {} bytes", max_bytes).into());
         }
         buf.extend_from_slice(&tmp[..n]);
-
-        // Check if we have complete headers yet (look for \r\n\r\n)
+        // --------------------------------------------------
+        // check if we have complete headers yet (look for \r\n\r\n)
+        // --------------------------------------------------
         if let Some(header_end) = find_header_end(&buf) {
-            // Parse Content-Length from the headers we have so far
+            // --------------------------------------------------
+            // parse Content-Length from the headers we have so far
+            // --------------------------------------------------
             let content_length = parse_content_length(&buf[..header_end]);
             let body_received = buf.len().saturating_sub(header_end + 4);
-
             if body_received >= content_length {
                 return Ok(Some(buf));
             }
-            // Keep reading until we have the full body
         }
     }
 }
@@ -96,7 +102,9 @@ fn parse_content_length(header_bytes: &[u8]) -> usize {
 /// }
 /// ```
 pub struct Server {
+    /// Server configuration loaded from file or defaults
     config: Config,
+    /// Handler instance that processes incoming requests for both servers
     handler: Handler,
 }
 
@@ -128,9 +136,10 @@ impl Server {
         // path if canonicalization fails (e.g., directory doesn't exist yet).
         let raw_path = PathBuf::from(&config.base_path);
         let base_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path);
+        std::fs::create_dir_all("/tmp/otd-cache").ok();
         let state = Arc::new(AppState::new(base_path));
         let handler = Handler::new(state, config.clone());
-        
+
         Self { config, handler }
     }
 
@@ -169,28 +178,22 @@ impl Server {
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let admin_addr = self.config.admin_addr()?;
         let download_addr = self.config.download_addr()?;
-        
         tracing::info!("Admin server listening on {}", admin_addr);
         tracing::info!("Download server listening on {}", download_addr);
         tracing::info!("Base path: {}", self.config.base_path);
-
         if self.config.admin_token.is_none() {
             tracing::warn!(
                 "Admin interface has NO authentication. \
                  Set `admin_token` in otd-config.toml and bind to a trusted interface."
             );
         }
-
         // Start both servers concurrently
         let admin_handler = self.handler.clone();
         let download_handler = self.handler.clone();
-        
         let admin_server = self.run_admin_server(admin_addr, admin_handler);
         let download_server = self.run_download_server(download_addr, download_handler);
-        
         // Run both servers concurrently
         smol::future::try_zip(admin_server, download_server).await?;
-        
         Ok(())
     }
 
@@ -214,11 +217,11 @@ impl Server {
         handler: Handler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(addr).await?;
-        
+
         loop {
             let (mut stream, peer_addr) = listener.accept().await?;
             let handler = handler.clone();
-            
+
             smol::spawn(async move {
                 let max_bytes = handler.config.max_request_size;
                 match read_request(&mut stream, max_bytes).await {
@@ -232,7 +235,8 @@ impl Server {
                             }
                             Err(e) => {
                                 tracing::error!("Error handling admin request: {}", e);
-                                let error_response = crate::http::HttpResponse::internal_server_error().to_bytes();
+                                let error_response =
+                                    crate::http::HttpResponse::internal_server_error().to_bytes();
                                 let _ = stream.write_all(&error_response).await;
                             }
                         }
@@ -241,14 +245,18 @@ impl Server {
                         tracing::debug!("Empty admin request received");
                     }
                     Err(e) => {
-                        tracing::warn!("Admin request read error (possible oversized request): {}", e);
+                        tracing::warn!(
+                            "Admin request read error (possible oversized request): {}",
+                            e
+                        );
                         let response = crate::http::HttpResponse::new(413, "Payload Too Large")
                             .body_text("Request too large")
                             .to_bytes();
                         let _ = stream.write_all(&response).await;
                     }
                 }
-            }).detach();
+            })
+            .detach();
         }
     }
 
@@ -272,11 +280,11 @@ impl Server {
         handler: Handler,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind(addr).await?;
-        
+
         loop {
             let (mut stream, _) = listener.accept().await?;
             let handler = handler.clone();
-            
+
             smol::spawn(async move {
                 let max_bytes = handler.config.max_request_size;
                 match read_request(&mut stream, max_bytes).await {
@@ -290,7 +298,8 @@ impl Server {
                             }
                             Err(e) => {
                                 tracing::error!("Error handling download request: {}", e);
-                                let error_response = crate::http::HttpResponse::internal_server_error().to_bytes();
+                                let error_response =
+                                    crate::http::HttpResponse::internal_server_error().to_bytes();
                                 let _ = stream.write_all(&error_response).await;
                             }
                         }
@@ -306,7 +315,8 @@ impl Server {
                         let _ = stream.write_all(&response).await;
                     }
                 }
-            }).detach();
+            })
+            .detach();
         }
     }
 }
@@ -319,7 +329,7 @@ mod tests {
     fn test_server_creation() {
         let config = Config::default();
         let server = Server::new(config.clone());
-        
+
         assert_eq!(server.config.admin_port, config.admin_port);
         assert_eq!(server.config.download_port, config.download_port);
     }
@@ -327,10 +337,10 @@ mod tests {
     #[test]
     fn test_config_addresses() {
         let config = Config::default();
-        
+
         let admin_addr = config.admin_addr().unwrap();
         assert_eq!(admin_addr.port(), 15204);
-        
+
         let download_addr = config.download_addr().unwrap();
         assert_eq!(download_addr.port(), 15205);
     }
@@ -392,7 +402,7 @@ mod tests {
             String::from_utf8(large_body).unwrap()
         );
         let mut cursor = smol::io::Cursor::new(request.as_bytes().to_vec());
-        // Set max to 100 bytes — smaller than the request
+        // Set max to 100 bytes - smaller than the request
         let result = smol::block_on(read_request(&mut cursor, 100));
         assert!(result.is_err(), "Should error on oversized request");
     }

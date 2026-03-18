@@ -1,0 +1,11 @@
+services:
+    otd:
+        image: otd:latest
+        container_name: otd
+        ports:
+            - "15204:15204"
+            - "15205:15205"
+        volumes:
+            - /mnt/arpadnas/vault:/vault:ro
+            - /mnt/arpadnas/cfg/otd/otd-config.toml:/app/otd-config.toml:ro
+        restart: unless-stopped

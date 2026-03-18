@@ -27,7 +27,11 @@
 //!     .content_disposition("attachment; filename=\"example.txt\"")
 //!     .body_bytes(file_data);
 //! ```
-
+//!
+//! Author: aav
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use std::collections::HashMap;
 
 /// HTTP response builder that provides a fluent interface for constructing responses.
@@ -49,12 +53,16 @@ use std::collections::HashMap;
 /// assert!(String::from_utf8_lossy(&bytes).contains("Hello, world!"));
 /// ```
 pub struct HttpResponse {
+    /// HTTP status code (e.g., 200, 404, 500)
     status_code: u16,
+    /// HTTP status text (e.g., "OK", "Not Found", "Internal Server Error")
     status_text: &'static str,
+    /// HTTP headers as key-value pairs
     headers: HashMap<String, String>,
+    /// Response body as raw bytes
     body: Vec<u8>,
 }
-
+/// [`HttpResponse`] implementation
 impl HttpResponse {
     /// Creates a new HTTP response with the specified status code and text.
     ///
@@ -208,6 +216,22 @@ impl HttpResponse {
         self.header("Content-Length", &content_length)
     }
 
+    /// Initializes the response with status line and headers, but without body.
+    ///
+    /// Used internally to prepare the response string before appending the body content.
+    ///
+    /// # Returns
+    ///
+    /// [`String`] containing the HTTP status line and headers, ready to be sent before the body.
+    fn init_response(&self) -> String {
+        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
+        for (key, value) in &self.headers {
+            response.push_str(&format!("{key}: {value}\r\n"));
+        }
+        response.push_str("\r\n");
+        response
+    }
+
     /// Converts the response to a string representation (useful for text responses).
     ///
     /// # Returns
@@ -225,15 +249,8 @@ impl HttpResponse {
     /// assert!(response_str.contains("Hello"));
     /// ```
     pub fn to_string_response(self) -> String {
-        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
-        
-        for (key, value) in &self.headers {
-            response.push_str(&format!("{key}: {value}\r\n"));
-        }
-        
-        response.push_str("\r\n");
+        let mut response = self.init_response();
         response.push_str(&String::from_utf8_lossy(&self.body));
-        
         response
     }
 
@@ -253,15 +270,7 @@ impl HttpResponse {
     /// assert!(bytes.len() > 0);
     /// ```
     pub fn to_bytes(self) -> Vec<u8> {
-        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
-        
-        for (key, value) in &self.headers {
-            response.push_str(&format!("{key}: {value}\r\n"));
-        }
-        
-        response.push_str("\r\n");
-        
-        let mut bytes = response.into_bytes();
+        let mut bytes = self.init_response().into_bytes();
         bytes.extend(self.body);
         bytes
     }
@@ -300,8 +309,7 @@ pub mod content_type {
     /// Plain text
     pub const PLAIN_TEXT: &str = "text/plain";
 }
-
-/// Convenience methods for common HTTP responses.
+/// [`HttpResponse`] implementation
 impl HttpResponse {
     /// Creates a 200 OK response.
     ///
@@ -326,8 +334,7 @@ impl HttpResponse {
     /// let response = HttpResponse::bad_request();
     /// ```
     pub fn bad_request() -> Self {
-        Self::new(status::BAD_REQUEST.0, status::BAD_REQUEST.1)
-            .body_text("Bad Request")
+        Self::new(status::BAD_REQUEST.0, status::BAD_REQUEST.1).body_text("Bad Request")
     }
 
     /// Creates a 403 Forbidden response with default message.
@@ -340,8 +347,7 @@ impl HttpResponse {
     /// let response = HttpResponse::forbidden();
     /// ```
     pub fn forbidden() -> Self {
-        Self::new(status::FORBIDDEN.0, status::FORBIDDEN.1)
-            .body_text("Forbidden")
+        Self::new(status::FORBIDDEN.0, status::FORBIDDEN.1).body_text("Forbidden")
     }
 
     /// Creates a 404 Not Found response with default message.
@@ -354,8 +360,7 @@ impl HttpResponse {
     /// let response = HttpResponse::not_found();
     /// ```
     pub fn not_found() -> Self {
-        Self::new(status::NOT_FOUND.0, status::NOT_FOUND.1)
-            .body_text("Not Found")
+        Self::new(status::NOT_FOUND.0, status::NOT_FOUND.1).body_text("Not Found")
     }
 
     /// Creates a 410 Gone response with message about expired download links.
@@ -368,8 +373,7 @@ impl HttpResponse {
     /// let response = HttpResponse::gone();
     /// ```
     pub fn gone() -> Self {
-        Self::new(status::GONE.0, status::GONE.1)
-            .body_text("Download link has already been used")
+        Self::new(status::GONE.0, status::GONE.1).body_text("Download link has already been used")
     }
 
     /// Creates a 302 redirect response.
@@ -401,8 +405,11 @@ impl HttpResponse {
     /// let response = HttpResponse::internal_server_error();
     /// ```
     pub fn internal_server_error() -> Self {
-        Self::new(status::INTERNAL_SERVER_ERROR.0, status::INTERNAL_SERVER_ERROR.1)
-            .body_text("Internal Server Error")
+        Self::new(
+            status::INTERNAL_SERVER_ERROR.0,
+            status::INTERNAL_SERVER_ERROR.1,
+        )
+        .body_text("Internal Server Error")
     }
 }
 
@@ -415,7 +422,7 @@ mod tests {
         let response = HttpResponse::ok().body_text("Hello");
         let bytes = response.to_bytes();
         let response_str = String::from_utf8_lossy(&bytes);
-        
+
         assert!(response_str.contains("HTTP/1.1 200 OK"));
         assert!(response_str.contains("Content-Length: 5"));
         assert!(response_str.contains("Hello"));
@@ -427,7 +434,7 @@ mod tests {
         let response = HttpResponse::ok().body_json(&data).unwrap();
         let bytes = response.to_bytes();
         let response_str = String::from_utf8_lossy(&bytes);
-        
+
         assert!(response_str.contains("application/json"));
         assert!(response_str.contains("test"));
         assert!(response_str.contains("value"));
@@ -439,10 +446,10 @@ mod tests {
             .content_type(content_type::OCTET_STREAM)
             .content_disposition("attachment; filename=\"test.txt\"")
             .body_bytes(b"file content".to_vec());
-        
+
         let bytes = response.to_bytes();
         let response_str = String::from_utf8_lossy(&bytes);
-        
+
         assert!(response_str.contains("application/octet-stream"));
         assert!(response_str.contains("attachment; filename=\"test.txt\""));
         assert!(response_str.contains("Content-Length: 12"));

@@ -49,13 +49,19 @@
 //!     server.run().await
 //! }
 //! ```
-
+//!
+//! Author: aav
+// --------------------------------------------------
+// mods
+// --------------------------------------------------
 pub mod config;
 pub mod handlers;
 pub mod http;
 pub mod server;
 pub mod types;
-
+// --------------------------------------------------
+// re-exports
+// --------------------------------------------------
 pub use config::Config;
 pub use handlers::Handler;
 pub use server::Server;
