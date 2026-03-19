@@ -9,14 +9,10 @@
 // --------------------------------------------------
 use serde::{Deserialize, Serialize};
 use smol::lock::RwLock;
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-    sync::atomic::{AtomicBool, AtomicU32},
-};
+use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicU32};
 
-/// Tracks the lifecycle of a zip archive for a download item.
 #[derive(Debug)]
+/// Tracks the lifecycle of a zip archive for a download item.
 pub enum ZipState {
     /// Single-file download - no zip needed
     NotNeeded,
@@ -50,7 +46,7 @@ pub struct DownloadItem {
     /// When this download item was created
     pub created_at: std::time::Instant,
     /// Zip preparation state (interior-mutable; never held across .await)
-    pub zip_state: std::sync::RwLock<ZipState>,
+    pub zip_state: smol::lock::RwLock<ZipState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +172,57 @@ pub struct StagedFile {
     pub size: Option<u64>,
 }
 
+#[derive(Debug, Serialize)]
+/// Dashboard statistics response payload.
+///
+/// Returned by the `/api/stats` endpoint with aggregate token and download metrics.
+pub struct StatsResponse {
+    /// Number of tokens that are still valid and have remaining downloads
+    pub active_tokens: u32,
+    /// Number of tokens that have reached their download limit
+    pub used_tokens: u32,
+    /// Number of tokens that have passed their expiration time
+    pub expired_tokens: u32,
+    /// Total downloads across all tokens
+    pub total_downloads: u64,
+    /// Server uptime in seconds
+    pub uptime_seconds: u64,
+}
+
+#[derive(Debug, Serialize)]
+/// Represents a single token in the `/api/tokens` listing.
+pub struct TokenListItem {
+    /// Unique token identifier
+    pub token: String,
+    /// Display name for the download
+    pub name: String,
+    /// Whether this download contains multiple files/folders
+    pub is_multi_file: bool,
+    /// Current download count
+    pub download_count: u32,
+    /// Maximum allowed downloads
+    pub max_downloads: u32,
+    /// Remaining downloads before the link becomes invalid
+    pub remaining_downloads: u32,
+    /// Whether the token has expired
+    pub expired: bool,
+    /// Seconds until expiration (None if already expired or no expiry set)
+    pub expires_in_seconds: Option<u64>,
+    /// Full download URL
+    pub download_url: String,
+    /// List of file/folder paths included in this download
+    pub paths: Vec<String>,
+    /// Current zip preparation status
+    pub zip_status: String,
+}
+
+#[derive(Debug, Serialize)]
+/// Response payload for bulk-delete and single-delete operations.
+pub struct BulkDeleteResponse {
+    /// Number of tokens removed
+    pub removed: usize,
+}
+
 /// Shared application state containing configuration and active downloads.
 ///
 /// This structure is shared between all request handlers and contains the
@@ -192,8 +239,6 @@ pub struct StagedFile {
 pub struct AppState {
     /// Map of active download tokens to their corresponding items
     pub tokens: RwLock<HashMap<String, DownloadItem>>,
-    /// Whether one-time download enforcement is enabled
-    pub one_time_enabled: AtomicBool,
     /// Base directory path for file serving
     pub base_path: PathBuf,
     /// Active login sessions: token → creation time
@@ -201,7 +246,7 @@ pub struct AppState {
     /// Server start time for uptime tracking
     pub started_at: std::time::Instant,
 }
-
+/// [`AppState`] implementation
 impl AppState {
     /// Creates a new application state with the specified base path.
     ///
@@ -221,7 +266,6 @@ impl AppState {
     pub fn new(base_path: PathBuf) -> Self {
         Self {
             tokens: RwLock::new(HashMap::new()),
-            one_time_enabled: AtomicBool::new(true),
             base_path,
             sessions: RwLock::new(HashMap::new()),
             started_at: std::time::Instant::now(),
@@ -240,7 +284,6 @@ mod tests {
         let state = AppState::new(base_path.clone());
 
         assert_eq!(state.base_path, base_path);
-        assert!(state.one_time_enabled.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -253,7 +296,7 @@ mod tests {
             download_count: AtomicU32::new(0),
             expires_at: None,
             created_at: std::time::Instant::now(),
-            zip_state: std::sync::RwLock::new(ZipState::NotNeeded),
+            zip_state: smol::lock::RwLock::new(ZipState::NotNeeded),
         };
 
         assert_eq!(item.paths.len(), 1);

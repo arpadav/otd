@@ -29,11 +29,6 @@
 //! ```
 //!
 //! Author: aav
-// --------------------------------------------------
-// external
-// --------------------------------------------------
-use std::fmt::Write;
-
 /// HTTP response builder that provides a fluent interface for constructing responses.
 ///
 /// This struct allows you to build HTTP responses with proper status codes, headers,
@@ -144,7 +139,9 @@ impl HttpResponse {
         self.header("Content-Disposition", disposition)
     }
 
-    /// Sets the response body to the provided text and automatically sets Content-Length.
+    /// Sets the response body to the provided text.
+    ///
+    /// `Content-Length` is computed automatically at serialization time.
     ///
     /// # Arguments
     ///
@@ -160,11 +157,13 @@ impl HttpResponse {
     /// ```
     pub fn body_text(mut self, text: &str) -> Self {
         self.body = text.as_bytes().to_vec();
-        let content_length = self.body.len().to_string();
-        self.header("Content-Length", &content_length)
+        self
     }
 
-    /// Sets the response body to JSON-serialized data and sets appropriate headers.
+    /// Sets the response body to JSON-serialized data and sets `Content-Type`
+    /// to `application/json`.
+    ///
+    /// `Content-Length` is computed automatically at serialization time.
     ///
     /// # Arguments
     ///
@@ -188,13 +187,13 @@ impl HttpResponse {
     pub fn body_json<T: serde::Serialize>(mut self, data: &T) -> Result<Self, serde_json::Error> {
         let json = serde_json::to_string(data)?;
         self.body = json.as_bytes().to_vec();
-        let content_length = self.body.len().to_string();
-        Ok(self
-            .content_type(content_type::JSON)
-            .header("Content-Length", &content_length))
+        self.headers.retain(|(k, _)| *k != "Content-Type");
+        Ok(self.content_type(content_type::JSON))
     }
 
-    /// Sets the response body to raw bytes and automatically sets Content-Length.
+    /// Sets the response body to raw bytes.
+    ///
+    /// `Content-Length` is computed automatically at serialization time.
     ///
     /// # Arguments
     ///
@@ -212,24 +211,59 @@ impl HttpResponse {
     /// ```
     pub fn body_bytes(mut self, bytes: Vec<u8>) -> Self {
         self.body = bytes;
-        let content_length = self.body.len().to_string();
-        self.header("Content-Length", &content_length)
+        self
     }
 
-    /// Initializes the response with status line and headers, but without body.
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// Serializes the status line, headers, and a computed `Content-Length`
+    /// into the wire format prefix (everything before the body).
     ///
-    /// Used internally to prepare the response string before appending the body content.
+    /// `Content-Length` is always derived from `self.body.len()` here — it is
+    /// never stored as a builder header — so duplicates are structurally impossible.
     ///
     /// # Returns
     ///
     /// [`String`] containing the HTTP status line and headers, ready to be sent before the body.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::ok()
+    ///     .header("Content-Type", "text/plain")
+    ///     .body_text("Hello, World!");
+    ///
+    /// assert_eq!(
+    ///     response.init_response(),
+    ///     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\n"
+    /// );
+    /// ```
     fn init_response(&self) -> String {
         let mut response = String::with_capacity(256);
-        write!(response, "HTTP/1.1 {} {}\r\n", self.status_code, self.status_text).unwrap();
-        for (key, value) in &self.headers {
-            write!(response, "{key}: {value}\r\n").unwrap();
-        }
+        let digits = [
+            b'0' + (self.status_code / 100) as u8,
+            b'0' + ((self.status_code / 10) % 10) as u8,
+            b'0' + (self.status_code % 10) as u8,
+        ];
+        response.push_str("HTTP/1.1 ");
+        #[allow(
+            clippy::unwrap_used,
+            reason = "digits are guaranteed ASCII - status codes are 100..=599"
+        )]
+        response.push_str(std::str::from_utf8(&digits).unwrap());
+        response.push(' ');
+        response.push_str(self.status_text);
         response.push_str("\r\n");
+        self.headers.iter().for_each(|(key, value)| {
+            response.push_str(key);
+            response.push_str(": ");
+            response.push_str(value);
+            response.push_str("\r\n");
+        });
+        response.push_str("Content-Length: ");
+        response.push_str(&self.body.len().to_string());
+        response.push_str("\r\n\r\n");
         response
     }
 

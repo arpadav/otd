@@ -8,7 +8,12 @@
 // --------------------------------------------------
 // external
 // --------------------------------------------------
-use crate::{config::{Config, ParsedConfig}, handlers::Handler, handlers::download::ARCHIVE_CACHE_DIR, types::AppState};
+use crate::{
+    config::{Config, ParsedConfig},
+    handlers::Handler,
+    handlers::download::ARCHIVE_CACHE_DIR,
+    types::AppState,
+};
 use smol::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 use std::{path::PathBuf, sync::Arc};
 
@@ -43,7 +48,7 @@ where
             return Ok(if buf.is_empty() { None } else { Some(buf) });
         }
         if buf.len() + n > max_bytes {
-            return Err(format!("Request exceeds maximum size of {} bytes", max_bytes).into());
+            return Err(format!("Request exceeds maximum size of {max_bytes} bytes").into());
         }
         buf.extend_from_slice(&tmp[..n]);
         // --------------------------------------------------
@@ -184,9 +189,10 @@ impl Server {
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let admin_addr = self.config.admin_addr;
         let download_addr = self.config.download_addr;
-        tracing::info!("Admin server listening on {}", admin_addr);
-        tracing::info!("Download server listening on {}", download_addr);
-        tracing::info!("Base path: {}", self.config.raw.base_path);
+        tracing::info!("Admin server listening on {admin_addr}");
+        tracing::info!("Download server listening on {download_addr}");
+        let base_path = &self.config.raw.base_path;
+        tracing::info!("Base path: {base_path}");
         if self.config.raw.admin_token.is_none() {
             tracing::warn!(
                 "Admin interface has NO authentication. \
@@ -236,11 +242,11 @@ impl Server {
                         match handler.handle_admin_request(&request_str, peer_addr).await {
                             Ok(response_bytes) => {
                                 if let Err(e) = stream.write_all(&response_bytes).await {
-                                    tracing::error!("Failed to write admin response: {}", e);
+                                    tracing::error!("Failed to write admin response: {e}");
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("Error handling admin request: {}", e);
+                                tracing::error!("Error handling admin request: {e}");
                                 let error_response =
                                     crate::http::HttpResponse::internal_server_error().to_bytes();
                                 let _ = stream.write_all(&error_response).await;
@@ -252,8 +258,7 @@ impl Server {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "Admin request read error (possible oversized request): {}",
-                            e
+                            "Admin request read error (possible oversized request): {e}"
                         );
                         let response = crate::http::HttpResponse::payload_too_large().to_bytes();
                         let _ = stream.write_all(&response).await;
@@ -286,7 +291,7 @@ impl Server {
         let listener = TcpListener::bind(addr).await?;
 
         loop {
-            let (mut stream, _) = listener.accept().await?;
+            let (mut stream, peer_addr) = listener.accept().await?;
             let handler = handler.clone();
 
             smol::spawn(async move {
@@ -294,14 +299,14 @@ impl Server {
                 match read_request(&mut stream, max_bytes).await {
                     Ok(Some(bytes)) => {
                         let request_str = String::from_utf8_lossy(&bytes);
-                        match handler.handle_download_request(&request_str).await {
+                        match handler.handle_download_request(&request_str, peer_addr).await {
                             Ok(response_bytes) => {
                                 if let Err(e) = stream.write_all(&response_bytes).await {
-                                    tracing::error!("Failed to write download response: {}", e);
+                                    tracing::error!("Failed to write download response: {e}");
                                 }
                             }
                             Err(e) => {
-                                tracing::error!("Error handling download request: {}", e);
+                                tracing::error!("Error handling download request: {e}");
                                 let error_response =
                                     crate::http::HttpResponse::internal_server_error().to_bytes();
                                 let _ = stream.write_all(&error_response).await;
@@ -312,7 +317,7 @@ impl Server {
                         tracing::debug!("Empty download request received");
                     }
                     Err(e) => {
-                        tracing::warn!("Download request read error: {}", e);
+                        tracing::warn!("Download request read error: {e}");
                         let response = crate::http::HttpResponse::payload_too_large().to_bytes();
                         let _ = stream.write_all(&response).await;
                     }

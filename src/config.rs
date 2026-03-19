@@ -17,6 +17,7 @@ use std::{net::SocketAddr, path::PathBuf};
 const OTD_CONFIG_FILE: &str = "otd-config.toml";
 const OTD_CONFIG_ENVIRONMENT_VAR: &str = "OTD_CONFIG_FILE";
 const OTD_BASE_ENVIRONMENT_VAR: &str = "OTD_BASE_PATH";
+const OTD_LOG_ENVIRONMENT_VAR: &str = "OTD_LOG";
 const DEFAULT_ADMIN_PORT: u16 = 15204;
 const DEFAULT_ADMIN_HOST: &str = "127.0.0.1";
 const DEFAULT_DOWNLOAD_PORT: u16 = 15205;
@@ -77,6 +78,13 @@ pub struct Config {
     /// When set, external (non-127.0.0.1/::1) requests must authenticate via
     /// a login form. When `None`, external requests receive a 403 error.
     pub admin_password: Option<String>,
+    /// Log level filter: "trace", "debug", "info", "warn", or "error".
+    /// Can be overridden by the `OTD_LOG` environment variable.
+    /// Defaults to "info" when not set.
+    pub log_level: Option<String>,
+    /// Optional log file path. When set, logs are written to this file
+    /// in addition to stdout. The parent directory must exist.
+    pub log_file: Option<String>,
 }
 /// [`Config`] implementation of [`Default`]
 impl Default for Config {
@@ -97,6 +105,8 @@ impl Default for Config {
             key_path: None,
             admin_token: None,
             admin_password: None,
+            log_level: None,
+            log_file: None,
         }
     }
 }
@@ -140,9 +150,7 @@ impl Config {
         ) {
             (_, Ok(config_path)) => {
                 tracing::info!(
-                    "Using config file from environment variable {}: {}",
-                    OTD_CONFIG_ENVIRONMENT_VAR,
-                    config_path
+                    "Using config file from environment variable {OTD_CONFIG_ENVIRONMENT_VAR}: {config_path}"
                 );
                 config_path
             }
@@ -150,7 +158,7 @@ impl Config {
                 let default_config = Self::default();
                 let toml_str = toml::to_string_pretty(&default_config)?;
                 std::fs::write(OTD_CONFIG_FILE, toml_str)?;
-                tracing::info!("Created default config file: {}", OTD_CONFIG_FILE);
+                tracing::info!("Created default config file: {OTD_CONFIG_FILE}");
                 OTD_CONFIG_FILE.to_string()
             }
             (true, Err(_)) => OTD_CONFIG_FILE.to_string(),
@@ -162,6 +170,9 @@ impl Config {
         // --------------------------------------------------
         if let Ok(base_path) = std::env::var(OTD_BASE_ENVIRONMENT_VAR) {
             config.base_path = base_path;
+        }
+        if let Ok(log_level) = std::env::var(OTD_LOG_ENVIRONMENT_VAR) {
+            config.log_level = Some(log_level);
         }
         // --------------------------------------------------
         // return
