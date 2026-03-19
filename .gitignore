@@ -2,3 +2,4 @@
 static/style.css
 **/*.tar
 .claude
+logs/

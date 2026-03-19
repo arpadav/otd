@@ -1,51 +1,95 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en" class="h-full">
-	<head>
-		<meta charset="UTF-8">
-		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Login — OTD</title>
-		<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>">
-		<style>{{TAILWIND_CSS}}</style>
-	</head>
-	<body class="h-full bg-surface-alt text-text antialiased">
-		<script>if (localStorage.getItem('otd-dark-mode') === 'true') document.documentElement.classList.add('dark');</script>
-		<div class="min-h-full flex flex-col">
-			<!-- Header -->
-			<header class="bg-brand text-white">
-				<div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-5">
-					<span class="text-xl font-bold tracking-tight flex items-center gap-2">
-						<svg class="w-6 h-6 text-accent" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-							<path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374"/>
-						</svg>
-						OTD
-					</span>
-				</div>
-			</header>
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Login - OTD</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>"
+        />
+        <style>
+            {{TAILWIND_CSS}}
+        </style>
+    </head>
+    <body class="h-full bg-surface-alt text-text antialiased">
+        <script>
+            if (localStorage.getItem("otd-dark-mode") === "true")
+                document.documentElement.classList.add("dark");
+        </script>
+        <div class="min-h-full flex flex-col">
+            <!-- Header -->
+            <header class="bg-brand text-white">
+                <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-5">
+                    <span
+                        class="text-xl font-bold tracking-tight flex items-center gap-2"
+                    >
+                        <svg
+                            class="w-6 h-6 text-accent"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke-width="2"
+                            stroke="currentColor"
+                        >
+                            <path
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                                d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374"
+                            />
+                        </svg>
+                        OTD
+                    </span>
+                </div>
+            </header>
 
-			<!-- Content -->
-			<main class="flex-1 flex items-center justify-center px-4 sm:px-6 lg:px-8 py-10">
-				<div class="bg-surface rounded-xl border border-border shadow-sm p-6 sm:p-8 w-full max-w-sm space-y-6">
-					<div class="text-center">
-						<h1 class="text-2xl font-bold text-text">Admin Login</h1>
-						<p class="mt-1 text-sm text-text-muted">Enter your password to continue</p>
-					</div>
-					<div id="message" class="text-sm text-red-400 text-center">{{MESSAGE}}</div>
-					<form method="POST" action="/login" class="space-y-4">
-						<div>
-							<label for="password" class="block text-sm font-medium text-text-muted mb-1">Password</label>
-							<input type="password" id="password" name="password" required autofocus class="w-full rounded-lg border border-border bg-surface-alt px-3 py-2 text-text placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent">
-						</div>
-						<button type="submit" class="w-full bg-accent hover:bg-accent/90 text-white font-medium py-2 px-4 rounded-lg transition-colors">
-							Sign In
-						</button>
-					</form>
-				</div>
-			</main>
+            <!-- Content -->
+            <main
+                class="flex-1 flex items-center justify-center px-4 sm:px-6 lg:px-8 py-10"
+            >
+                <div
+                    class="bg-surface rounded-xl border border-border shadow-sm p-6 sm:p-8 w-full max-w-sm space-y-6"
+                >
+                    <div class="text-center">
+                        <h1 class="text-2xl font-bold text-text">
+                            Admin Login
+                        </h1>
+                        <p class="mt-1 text-sm text-text-muted">
+                            Enter your password to continue
+                        </p>
+                    </div>
+                    <div id="message" class="text-sm text-red-400 text-center">
+                        {{MESSAGE}}
+                    </div>
+                    <form method="POST" action="/login" class="space-y-4">
+                        <div>
+                            <label
+                                for="password"
+                                class="block text-sm font-medium text-text-muted mb-1"
+                                >Password</label
+                            >
+                            <input
+                                type="password"
+                                id="password"
+                                name="password"
+                                required
+                                autofocus
+                                class="w-full rounded-lg border border-border bg-surface-alt px-3 py-2 text-text placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent"
+                            />
+                        </div>
+                        <button
+                            type="submit"
+                            class="w-full bg-accent hover:bg-accent/90 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                        >
+                            Sign In
+                        </button>
+                    </form>
+                </div>
+            </main>
 
-			<!-- Footer -->
-			<footer class="py-4 text-center text-xs text-text-muted">
-				OTD — One-Time Downloads
-			</footer>
-		</div>
-	</body>
+            <!-- Footer -->
+            <footer class="py-4 text-center text-xs text-text-muted">
+                OTD - One-Time Downloads
+            </footer>
+        </div>
+    </body>
 </html>
