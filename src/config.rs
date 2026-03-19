@@ -17,6 +17,13 @@ use std::{net::SocketAddr, path::PathBuf};
 const OTD_CONFIG_FILE: &str = "otd-config.toml";
 const OTD_CONFIG_ENVIRONMENT_VAR: &str = "OTD_CONFIG_FILE";
 const OTD_BASE_ENVIRONMENT_VAR: &str = "OTD_BASE_PATH";
+const DEFAULT_ADMIN_PORT: u16 = 15204;
+const DEFAULT_ADMIN_HOST: &str = "127.0.0.1";
+const DEFAULT_DOWNLOAD_PORT: u16 = 15205;
+const DEFAULT_DOWNLOAD_HOST: &str = "0.0.0.0";
+const DEFAULT_BUFFER_SIZE: usize = 8192;
+const DEFAULT_MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024; // 10MB
+const DEFAULT_BASE_PATH_FALLBACK: &str = "/tmp";
 
 /// Main configuration structure for the OTD server.
 ///
@@ -75,16 +82,16 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            admin_port: 15204,
-            admin_host: "127.0.0.1".into(),
-            download_port: 15205,
-            download_host: "0.0.0.0".into(),
+            admin_port: DEFAULT_ADMIN_PORT,
+            admin_host: DEFAULT_ADMIN_HOST.into(),
+            download_port: DEFAULT_DOWNLOAD_PORT,
+            download_host: DEFAULT_DOWNLOAD_HOST.into(),
             download_base_url: None,
             base_path: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into())
-                .unwrap_or_else(|_| "/tmp".into()),
-            buffer_size: 8192,
-            max_request_size: 10 * 1024 * 1024, // 10MB
+                .unwrap_or_else(|_| DEFAULT_BASE_PATH_FALLBACK.into()),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            max_request_size: DEFAULT_MAX_REQUEST_SIZE,
             enable_https: false,
             cert_path: None,
             key_path: None,
@@ -226,15 +233,68 @@ impl Config {
     /// ```
     pub fn download_base_url(&self) -> String {
         match &self.download_base_url {
-            Some(url) => return url.clone(),
+            Some(url) => url.clone(),
             None => {
-                let protocol = if self.enable_https { "https" } else { "http" };
+                let protocol: &'static str = ["http", "https"][self.enable_https as usize];
                 format!(
                     "{}://{}:{}",
                     protocol, self.download_host, self.download_port
                 )
             }
         }
+    }
+}
+
+/// Pre-computed, immutable configuration derived from [`Config`].
+///
+/// Created once at startup via [`Config::parse`]. All values that would
+/// otherwise be recomputed per-request (socket addresses, download base URL)
+/// are resolved here. Typically shared behind an `Arc` so cloning the handler
+/// only bumps a reference count.
+///
+/// # Examples
+///
+/// ```rust
+/// use otd::config::{Config, ParsedConfig};
+///
+/// let parsed = Config::default().parse().unwrap();
+/// assert_eq!(parsed.admin_addr.port(), 15204);
+/// assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
+/// ```
+#[derive(Debug)]
+pub struct ParsedConfig {
+    /// The original TOML-level configuration.
+    pub raw: Config,
+    /// Pre-computed admin socket address.
+    pub admin_addr: SocketAddr,
+    /// Pre-computed download socket address.
+    pub download_addr: SocketAddr,
+    /// Pre-computed download base URL (e.g., "http://0.0.0.0:15205").
+    pub download_base_url: String,
+}
+
+impl Config {
+    /// Resolves a [`Config`] into a [`ParsedConfig`] by pre-computing
+    /// socket addresses and the download base URL.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::Config;
+    ///
+    /// let parsed = Config::default().parse().unwrap();
+    /// assert_eq!(parsed.admin_addr.port(), 15204);
+    /// ```
+    pub fn parse(self) -> Result<ParsedConfig, Box<dyn std::error::Error + Send + Sync>> {
+        let admin_addr = self.admin_addr()?;
+        let download_addr = self.download_addr()?;
+        let download_base_url = self.download_base_url();
+        Ok(ParsedConfig {
+            raw: self,
+            admin_addr,
+            download_addr,
+            download_base_url,
+        })
     }
 }
 
@@ -275,5 +335,14 @@ mod tests {
         config.download_host = "example.com".to_string();
         config.download_port = 443;
         assert_eq!(config.download_base_url(), "https://example.com:443");
+    }
+
+    #[test]
+    fn test_parsed_config() {
+        let parsed = Config::default().parse().unwrap();
+        assert_eq!(parsed.admin_addr.port(), 15204);
+        assert_eq!(parsed.download_addr.port(), 15205);
+        assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
+        assert_eq!(parsed.raw.admin_host, "127.0.0.1");
     }
 }

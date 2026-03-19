@@ -8,9 +8,14 @@
 // --------------------------------------------------
 // external
 // --------------------------------------------------
-use crate::{config::Config, handlers::Handler, types::AppState};
+use crate::{config::{Config, ParsedConfig}, handlers::Handler, handlers::download::ARCHIVE_CACHE_DIR, types::AppState};
 use smol::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 use std::{path::PathBuf, sync::Arc};
+
+/// Initial buffer capacity for reading HTTP requests.
+const READ_BUF_SIZE: usize = 4096;
+/// Maximum number of HTTP headers to parse.
+const MAX_PARSE_HEADERS: usize = 64;
 
 /// Reads a complete HTTP request from `stream`.
 ///
@@ -30,8 +35,8 @@ async fn read_request<S>(
 where
     S: AsyncReadExt + Unpin,
 {
-    let mut buf: Vec<u8> = Vec::with_capacity(4096);
-    let mut tmp = [0u8; 4096];
+    let mut buf: Vec<u8> = Vec::with_capacity(READ_BUF_SIZE);
+    let mut tmp = [0u8; READ_BUF_SIZE];
     loop {
         let n = stream.read(&mut tmp).await?;
         if n == 0 {
@@ -65,7 +70,7 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 /// Extracts the `Content-Length` value from raw HTTP headers.
 /// Returns 0 if the header is absent or unparseable (correct for GET/HEAD).
 fn parse_content_length(header_bytes: &[u8]) -> usize {
-    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut headers = [httparse::EMPTY_HEADER; MAX_PARSE_HEADERS];
     let mut req = httparse::Request::new(&mut headers);
     if req.parse(header_bytes).is_err() {
         return 0;
@@ -97,13 +102,13 @@ fn parse_content_length(header_bytes: &[u8]) -> usize {
 /// #[apply(main!)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ///     let config = Config::load()?;
-///     let server = Server::new(config);
+///     let server = Server::new(config)?;
 ///     server.run().await
 /// }
 /// ```
 pub struct Server {
-    /// Server configuration loaded from file or defaults
-    config: Config,
+    /// Pre-computed configuration (shared with handler via Arc)
+    config: Arc<ParsedConfig>,
     /// Handler instance that processes incoming requests for both servers
     handler: Handler,
 }
@@ -127,20 +132,21 @@ impl Server {
     /// ```rust
     /// use otd::{Server, Config};
     ///
-    /// let config = Config::default();
-    /// let server = Server::new(config);
+    /// let server = Server::new(Config::default()).unwrap();
     /// ```
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let parsed = config.parse()?;
         // Canonicalize base_path at startup so all subsequent path checks
         // work against a resolved, symlink-free root. Fall back to the raw
         // path if canonicalization fails (e.g., directory doesn't exist yet).
-        let raw_path = PathBuf::from(&config.base_path);
+        let raw_path = PathBuf::from(&parsed.raw.base_path);
         let base_path = std::fs::canonicalize(&raw_path).unwrap_or(raw_path);
-        std::fs::create_dir_all("/tmp/otd-cache").ok();
+        std::fs::create_dir_all(ARCHIVE_CACHE_DIR).ok();
         let state = Arc::new(AppState::new(base_path));
-        let handler = Handler::new(state, config.clone());
+        let handler = Handler::new(state, parsed);
+        let config = Arc::clone(&handler.config);
 
-        Self { config, handler }
+        Ok(Self { config, handler })
     }
 
     /// Starts both HTTP servers and runs them concurrently.
@@ -171,17 +177,17 @@ impl Server {
     /// #[apply(main!)]
     /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ///     let config = Config::load()?;
-    ///     let server = Server::new(config);
+    ///     let server = Server::new(config)?;
     ///     server.run().await
     /// }
     /// ```
     pub async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let admin_addr = self.config.admin_addr()?;
-        let download_addr = self.config.download_addr()?;
+        let admin_addr = self.config.admin_addr;
+        let download_addr = self.config.download_addr;
         tracing::info!("Admin server listening on {}", admin_addr);
         tracing::info!("Download server listening on {}", download_addr);
-        tracing::info!("Base path: {}", self.config.base_path);
-        if self.config.admin_token.is_none() {
+        tracing::info!("Base path: {}", self.config.raw.base_path);
+        if self.config.raw.admin_token.is_none() {
             tracing::warn!(
                 "Admin interface has NO authentication. \
                  Set `admin_token` in otd-config.toml and bind to a trusted interface."
@@ -223,7 +229,7 @@ impl Server {
             let handler = handler.clone();
 
             smol::spawn(async move {
-                let max_bytes = handler.config.max_request_size;
+                let max_bytes = handler.config.raw.max_request_size;
                 match read_request(&mut stream, max_bytes).await {
                     Ok(Some(bytes)) => {
                         let request_str = String::from_utf8_lossy(&bytes);
@@ -249,9 +255,7 @@ impl Server {
                             "Admin request read error (possible oversized request): {}",
                             e
                         );
-                        let response = crate::http::HttpResponse::new(413, "Payload Too Large")
-                            .body_text("Request too large")
-                            .to_bytes();
+                        let response = crate::http::HttpResponse::payload_too_large().to_bytes();
                         let _ = stream.write_all(&response).await;
                     }
                 }
@@ -286,7 +290,7 @@ impl Server {
             let handler = handler.clone();
 
             smol::spawn(async move {
-                let max_bytes = handler.config.max_request_size;
+                let max_bytes = handler.config.raw.max_request_size;
                 match read_request(&mut stream, max_bytes).await {
                     Ok(Some(bytes)) => {
                         let request_str = String::from_utf8_lossy(&bytes);
@@ -309,9 +313,7 @@ impl Server {
                     }
                     Err(e) => {
                         tracing::warn!("Download request read error: {}", e);
-                        let response = crate::http::HttpResponse::new(413, "Payload Too Large")
-                            .body_text("Request too large")
-                            .to_bytes();
+                        let response = crate::http::HttpResponse::payload_too_large().to_bytes();
                         let _ = stream.write_all(&response).await;
                     }
                 }
@@ -328,10 +330,10 @@ mod tests {
     #[test]
     fn test_server_creation() {
         let config = Config::default();
-        let server = Server::new(config.clone());
+        let server = Server::new(config).unwrap();
 
-        assert_eq!(server.config.admin_port, config.admin_port);
-        assert_eq!(server.config.download_port, config.download_port);
+        assert_eq!(server.config.raw.admin_port, 15204);
+        assert_eq!(server.config.raw.download_port, 15205);
     }
 
     #[test]

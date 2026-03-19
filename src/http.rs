@@ -32,7 +32,7 @@
 // --------------------------------------------------
 // external
 // --------------------------------------------------
-use std::collections::HashMap;
+use std::fmt::Write;
 
 /// HTTP response builder that provides a fluent interface for constructing responses.
 ///
@@ -57,8 +57,8 @@ pub struct HttpResponse {
     status_code: u16,
     /// HTTP status text (e.g., "OK", "Not Found", "Internal Server Error")
     status_text: &'static str,
-    /// HTTP headers as key-value pairs
-    headers: HashMap<String, String>,
+    /// HTTP headers as (key, value) pairs. Keys are always static string literals.
+    headers: Vec<(&'static str, String)>,
     /// Response body as raw bytes
     body: Vec<u8>,
 }
@@ -82,7 +82,7 @@ impl HttpResponse {
         Self {
             status_code,
             status_text,
-            headers: HashMap::new(),
+            headers: Vec::new(),
             body: Vec::new(),
         }
     }
@@ -103,8 +103,8 @@ impl HttpResponse {
     ///     .header("Cache-Control", "no-cache")
     ///     .header("X-Custom-Header", "custom-value");
     /// ```
-    pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.headers.insert(key.to_string(), value.to_string());
+    pub fn header(mut self, key: &'static str, value: &str) -> Self {
+        self.headers.push((key, value.to_string()));
         self
     }
 
@@ -190,7 +190,7 @@ impl HttpResponse {
         self.body = json.as_bytes().to_vec();
         let content_length = self.body.len().to_string();
         Ok(self
-            .content_type("application/json")
+            .content_type(content_type::JSON)
             .header("Content-Length", &content_length))
     }
 
@@ -224,9 +224,10 @@ impl HttpResponse {
     ///
     /// [`String`] containing the HTTP status line and headers, ready to be sent before the body.
     fn init_response(&self) -> String {
-        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
+        let mut response = String::with_capacity(256);
+        write!(response, "HTTP/1.1 {} {}\r\n", self.status_code, self.status_text).unwrap();
         for (key, value) in &self.headers {
-            response.push_str(&format!("{key}: {value}\r\n"));
+            write!(response, "{key}: {value}\r\n").unwrap();
         }
         response.push_str("\r\n");
         response
@@ -282,14 +283,22 @@ impl HttpResponse {
 pub mod status {
     /// 200 OK - Request succeeded
     pub const OK: (u16, &str) = (200, "OK");
+    /// 202 Accepted - Request accepted but not yet completed
+    pub const ACCEPTED: (u16, &str) = (202, "Accepted");
+    /// 302 Found - Temporary redirect
+    pub const FOUND: (u16, &str) = (302, "Found");
     /// 400 Bad Request - Invalid request syntax
     pub const BAD_REQUEST: (u16, &str) = (400, "Bad Request");
+    /// 401 Unauthorized - Authentication required
+    pub const UNAUTHORIZED: (u16, &str) = (401, "Unauthorized");
     /// 403 Forbidden - Server understood but refuses to authorize
     pub const FORBIDDEN: (u16, &str) = (403, "Forbidden");
     /// 404 Not Found - Requested resource not found
     pub const NOT_FOUND: (u16, &str) = (404, "Not Found");
     /// 410 Gone - Resource no longer available
     pub const GONE: (u16, &str) = (410, "Gone");
+    /// 413 Payload Too Large - Request body exceeds server limits
+    pub const PAYLOAD_TOO_LARGE: (u16, &str) = (413, "Payload Too Large");
     /// 500 Internal Server Error - Server encountered an error
     pub const INTERNAL_SERVER_ERROR: (u16, &str) = (500, "Internal Server Error");
 }
@@ -376,6 +385,19 @@ impl HttpResponse {
         Self::new(status::GONE.0, status::GONE.1).body_text("Download link has already been used")
     }
 
+    /// Creates a 202 Accepted response.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::accepted();
+    /// ```
+    pub fn accepted() -> Self {
+        Self::new(status::ACCEPTED.0, status::ACCEPTED.1)
+    }
+
     /// Creates a 302 redirect response.
     ///
     /// # Arguments
@@ -390,9 +412,38 @@ impl HttpResponse {
     /// let response = HttpResponse::redirect("/login");
     /// ```
     pub fn redirect(location: &str) -> Self {
-        Self::new(302, "Found")
+        Self::new(status::FOUND.0, status::FOUND.1)
             .header("Location", location)
             .body_text("")
+    }
+
+    /// Creates a 401 Unauthorized response with WWW-Authenticate header.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::unauthorized("otd-admin");
+    /// ```
+    pub fn unauthorized(realm: &str) -> Self {
+        Self::new(status::UNAUTHORIZED.0, status::UNAUTHORIZED.1)
+            .header("WWW-Authenticate", &format!("Bearer realm=\"{realm}\""))
+            .body_text("Unauthorized")
+    }
+
+    /// Creates a 413 Payload Too Large response.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::payload_too_large();
+    /// ```
+    pub fn payload_too_large() -> Self {
+        Self::new(status::PAYLOAD_TOO_LARGE.0, status::PAYLOAD_TOO_LARGE.1)
+            .body_text("Request too large")
     }
 
     /// Creates a 500 Internal Server Error response with default message.
@@ -410,6 +461,21 @@ impl HttpResponse {
             status::INTERNAL_SERVER_ERROR.1,
         )
         .body_text("Internal Server Error")
+    }
+
+    /// Sets Content-Disposition to `attachment` with the given filename.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::ok()
+    ///     .attachment("report.pdf")
+    ///     .body_bytes(vec![]);
+    /// ```
+    pub fn attachment(self, filename: &str) -> Self {
+        self.content_disposition(&format!("attachment; filename=\"{filename}\""))
     }
 }
 
