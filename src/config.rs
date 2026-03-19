@@ -3,9 +3,28 @@
 //! This module handles loading and managing server configuration from TOML files
 //! and environment variables. It provides sensible defaults and automatic config
 //! file generation.
-
+//!
+//! Author: aav
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use serde::{Deserialize, Serialize};
-use std::{fs, net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf};
+
+// --------------------------------------------------
+// constants
+// --------------------------------------------------
+const OTD_CONFIG_FILE: &str = "otd-config.toml";
+const OTD_CONFIG_ENVIRONMENT_VAR: &str = "OTD_CONFIG_FILE";
+const OTD_BASE_ENVIRONMENT_VAR: &str = "OTD_BASE_PATH";
+const OTD_LOG_ENVIRONMENT_VAR: &str = "OTD_LOG";
+const DEFAULT_ADMIN_PORT: u16 = 15204;
+const DEFAULT_ADMIN_HOST: &str = "127.0.0.1";
+const DEFAULT_DOWNLOAD_PORT: u16 = 15205;
+const DEFAULT_DOWNLOAD_HOST: &str = "0.0.0.0";
+const DEFAULT_BUFFER_SIZE: usize = 8192;
+const DEFAULT_MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024; // 10MB
+const DEFAULT_BASE_PATH_FALLBACK: &str = "/tmp";
 
 /// Main configuration structure for the OTD server.
 ///
@@ -26,12 +45,18 @@ use std::{fs, net::SocketAddr, path::PathBuf};
 pub struct Config {
     /// Port for the admin interface (file browsing, link generation)
     pub admin_port: u16,
+    /// Host/IP address for the admin interface.
+    /// Defaults to `127.0.0.1` - intentionally localhost-only.
+    /// Set to `0.0.0.0` only if you are behind a trusted reverse proxy
+    /// that enforces its own authentication.
+    pub admin_host: String,
     /// Port for the download server (file downloads only)
     pub download_port: u16,
-    /// Host/IP address for the admin interface
-    pub admin_host: String,
     /// Host/IP address for the download server
     pub download_host: String,
+    /// Base url for download links (e.g., "https://files.example.com/")
+    /// If `None`, will just default to the download host and port (e.g., "http://{download_host}:{download_port}").
+    pub download_base_url: Option<String>,
     /// Base directory path for file serving
     pub base_path: String,
     /// Buffer size for HTTP request reading
@@ -44,48 +69,48 @@ pub struct Config {
     pub cert_path: Option<String>,
     /// Path to TLS private key file (required if HTTPS enabled)
     pub key_path: Option<String>,
+    /// Optional shared secret token for admin interface authentication.
+    /// When set, every admin request must include the header:
+    ///   `Authorization: Bearer <token>`
+    /// Leave `None` to disable authentication (only safe on localhost).
+    pub admin_token: Option<String>,
+    /// Optional password for admin interface login from non-loopback addresses.
+    /// When set, external (non-127.0.0.1/::1) requests must authenticate via
+    /// a login form. When `None`, external requests receive a 403 error.
+    pub admin_password: Option<String>,
+    /// Log level filter: "trace", "debug", "info", "warn", or "error".
+    /// Can be overridden by the `OTD_LOG` environment variable.
+    /// Defaults to "info" when not set.
+    pub log_level: Option<String>,
+    /// Optional log file path. When set, logs are written to this file
+    /// in addition to stdout. The parent directory must exist.
+    pub log_file: Option<String>,
 }
-
+/// [`Config`] implementation of [`Default`]
 impl Default for Config {
-    /// Creates a default configuration with sensible values.
-    ///
-    /// # Default Values
-    ///
-    /// - Admin port: 15204
-    /// - Download port: 15205
-    /// - Host: 0.0.0.0 (all interfaces)
-    /// - Base path: current directory
-    /// - Buffer size: 8KB
-    /// - Max request size: 10MB
-    /// - HTTPS: disabled
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use otd::Config;
-    ///
-    /// let config = Config::default();
-    /// assert_eq!(config.admin_port, 15204);
-    /// assert_eq!(config.download_port, 15205);
-    /// ```
     fn default() -> Self {
         Self {
-            admin_port: 15204,
-            download_port: 15205,
-            admin_host: "0.0.0.0".to_string(),
-            download_host: "0.0.0.0".to_string(),
+            admin_port: DEFAULT_ADMIN_PORT,
+            admin_host: DEFAULT_ADMIN_HOST.into(),
+            download_port: DEFAULT_DOWNLOAD_PORT,
+            download_host: DEFAULT_DOWNLOAD_HOST.into(),
+            download_base_url: None,
             base_path: std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "/tmp".to_string()),
-            buffer_size: 8192,
-            max_request_size: 10 * 1024 * 1024, // 10MB
+                .map(|p| p.to_string_lossy().into())
+                .unwrap_or_else(|_| DEFAULT_BASE_PATH_FALLBACK.into()),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            max_request_size: DEFAULT_MAX_REQUEST_SIZE,
             enable_https: false,
             cert_path: None,
             key_path: None,
+            admin_token: None,
+            admin_password: None,
+            log_level: None,
+            log_file: None,
         }
     }
 }
-
+/// [`Config`] implementation
 impl Config {
     /// Loads configuration from file or creates a default configuration.
     ///
@@ -116,24 +141,42 @@ impl Config {
     /// - The configuration file contains invalid TOML syntax
     /// - The default configuration cannot be written to disk
     pub fn load() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let config_path = "otd-config.toml";
-        
-        if !PathBuf::from(config_path).exists() {
-            let default_config = Self::default();
-            let toml_str = toml::to_string_pretty(&default_config)?;
-            fs::write(config_path, toml_str)?;
-            tracing::info!("Created default config file: {}", config_path);
-            return Ok(default_config);
-        }
-
-        let config_str = fs::read_to_string(config_path)?;
+        // --------------------------------------------------
+        // create default file if not exists
+        // --------------------------------------------------
+        let config_path = match (
+            PathBuf::from(OTD_CONFIG_FILE).exists(),
+            std::env::var(OTD_CONFIG_ENVIRONMENT_VAR),
+        ) {
+            (_, Ok(config_path)) => {
+                tracing::info!(
+                    "Using config file from environment variable {OTD_CONFIG_ENVIRONMENT_VAR}: {config_path}"
+                );
+                config_path
+            }
+            (false, Err(_)) => {
+                let default_config = Self::default();
+                let toml_str = toml::to_string_pretty(&default_config)?;
+                std::fs::write(OTD_CONFIG_FILE, toml_str)?;
+                tracing::info!("Created default config file: {OTD_CONFIG_FILE}");
+                OTD_CONFIG_FILE.to_string()
+            }
+            (true, Err(_)) => OTD_CONFIG_FILE.to_string(),
+        };
+        let config_str = std::fs::read_to_string(config_path)?;
         let mut config: Config = toml::from_str(&config_str)?;
-        
-        // Override with environment variables if present
-        if let Ok(base_path) = std::env::var("OTD_BASE_PATH") {
+        // --------------------------------------------------
+        // override with environment variables if present
+        // --------------------------------------------------
+        if let Ok(base_path) = std::env::var(OTD_BASE_ENVIRONMENT_VAR) {
             config.base_path = base_path;
         }
-        
+        if let Ok(log_level) = std::env::var(OTD_LOG_ENVIRONMENT_VAR) {
+            config.log_level = Some(log_level);
+        }
+        // --------------------------------------------------
+        // return
+        // --------------------------------------------------
         Ok(config)
     }
 
@@ -188,7 +231,7 @@ impl Config {
     ///
     /// # Returns
     ///
-    /// * `String` - Complete base URL (e.g., "http://localhost:15205")
+    /// * `String` - Complete base URL (e.g., "http://0.0.0.0:15205")
     ///
     /// # Examples
     ///
@@ -200,8 +243,69 @@ impl Config {
     /// assert_eq!(base_url, "http://0.0.0.0:15205");
     /// ```
     pub fn download_base_url(&self) -> String {
-        let protocol = if self.enable_https { "https" } else { "http" };
-        format!("{}://{}:{}", protocol, self.download_host, self.download_port)
+        match &self.download_base_url {
+            Some(url) => url.clone(),
+            None => {
+                let protocol: &'static str = ["http", "https"][self.enable_https as usize];
+                format!(
+                    "{}://{}:{}",
+                    protocol, self.download_host, self.download_port
+                )
+            }
+        }
+    }
+}
+
+/// Pre-computed, immutable configuration derived from [`Config`].
+///
+/// Created once at startup via [`Config::parse`]. All values that would
+/// otherwise be recomputed per-request (socket addresses, download base URL)
+/// are resolved here. Typically shared behind an `Arc` so cloning the handler
+/// only bumps a reference count.
+///
+/// # Examples
+///
+/// ```rust
+/// use otd::config::{Config, ParsedConfig};
+///
+/// let parsed = Config::default().parse().unwrap();
+/// assert_eq!(parsed.admin_addr.port(), 15204);
+/// assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
+/// ```
+#[derive(Debug)]
+pub struct ParsedConfig {
+    /// The original TOML-level configuration.
+    pub raw: Config,
+    /// Pre-computed admin socket address.
+    pub admin_addr: SocketAddr,
+    /// Pre-computed download socket address.
+    pub download_addr: SocketAddr,
+    /// Pre-computed download base URL (e.g., "http://0.0.0.0:15205").
+    pub download_base_url: String,
+}
+
+impl Config {
+    /// Resolves a [`Config`] into a [`ParsedConfig`] by pre-computing
+    /// socket addresses and the download base URL.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::Config;
+    ///
+    /// let parsed = Config::default().parse().unwrap();
+    /// assert_eq!(parsed.admin_addr.port(), 15204);
+    /// ```
+    pub fn parse(self) -> Result<ParsedConfig, Box<dyn std::error::Error + Send + Sync>> {
+        let admin_addr = self.admin_addr()?;
+        let download_addr = self.download_addr()?;
+        let download_base_url = self.download_base_url();
+        Ok(ParsedConfig {
+            raw: self,
+            admin_addr,
+            download_addr,
+            download_base_url,
+        })
     }
 }
 
@@ -214,18 +318,19 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.admin_port, 15204);
         assert_eq!(config.download_port, 15205);
-        assert_eq!(config.admin_host, "0.0.0.0");
+        assert_eq!(config.admin_host, "127.0.0.1");
         assert_eq!(config.download_host, "0.0.0.0");
         assert!(!config.enable_https);
+        assert!(config.admin_token.is_none());
     }
 
     #[test]
     fn test_socket_addresses() {
         let config = Config::default();
-        
+
         let admin_addr = config.admin_addr().unwrap();
         assert_eq!(admin_addr.port(), 15204);
-        
+
         let download_addr = config.download_addr().unwrap();
         assert_eq!(download_addr.port(), 15205);
     }
@@ -234,12 +339,21 @@ mod tests {
     fn test_download_base_url() {
         let mut config = Config::default();
         assert_eq!(config.download_base_url(), "http://0.0.0.0:15205");
-        
+
         config.enable_https = true;
         assert_eq!(config.download_base_url(), "https://0.0.0.0:15205");
-        
+
         config.download_host = "example.com".to_string();
         config.download_port = 443;
         assert_eq!(config.download_base_url(), "https://example.com:443");
+    }
+
+    #[test]
+    fn test_parsed_config() {
+        let parsed = Config::default().parse().unwrap();
+        assert_eq!(parsed.admin_addr.port(), 15204);
+        assert_eq!(parsed.download_addr.port(), 15205);
+        assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
+        assert_eq!(parsed.raw.admin_host, "127.0.0.1");
     }
 }

@@ -1,612 +1,1665 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>One-Time Download Links</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f5f5f5;
-            color: #333;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        .header {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        
-        .main-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 20px;
-        }
-        
-        .panel {
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        
-        .panel-header {
-            background: #007acc;
-            color: white;
-            padding: 15px 20px;
-            font-weight: 600;
-        }
-        
-        .panel-content {
-            padding: 20px;
-        }
-        
-        .breadcrumb {
-            background: #f8f9fa;
-            padding: 10px 15px;
-            border-bottom: 1px solid #e9ecef;
-            font-size: 14px;
-            color: #666;
-        }
-        
-        .file-list {
-            max-height: 400px;
-            overflow-y: auto;
-        }
-        
-        .file-item {
-            display: flex;
-            align-items: center;
-            padding: 10px 15px;
-            border-bottom: 1px solid #f0f0f0;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        
-        .file-item:hover {
-            background: #f8f9fa;
-        }
-        
-        .file-item.selected {
-            background: #e3f2fd;
-        }
-        
-        .file-checkbox {
-            margin-right: 10px;
-        }
-        
-        .file-icon {
-            margin-right: 10px;
-            font-size: 16px;
-        }
-        
-        .file-name {
-            flex: 1;
-            font-weight: 500;
-        }
-        
-        .file-size {
-            color: #666;
-            font-size: 12px;
-        }
-        
-        .staged-files {
-            max-height: 300px;
-            overflow-y: auto;
-            margin-bottom: 20px;
-        }
-        
-        .staged-item {
-            display: flex;
-            align-items: center;
-            padding: 8px 12px;
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 4px;
-            margin-bottom: 5px;
-        }
-        
-        .staged-name {
-            flex: 1;
-            font-size: 14px;
-        }
-        
-        .remove-btn {
-            background: #dc3545;
-            color: white;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 11px;
-        }
-        
-        .remove-btn:hover {
-            background: #c82333;
-        }
-        
-        .generate-section {
-            border-top: 1px solid #e9ecef;
-            padding-top: 15px;
-        }
-        
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        .form-label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 500;
-            font-size: 14px;
-        }
-        
-        .form-input {
-            width: 100%;
-            padding: 8px 12px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .generate-btn {
-            background: #28a745;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            width: 100%;
-        }
-        
-        .generate-btn:hover {
-            background: #218838;
-        }
-        
-        .generate-btn:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-        
-        .clear-btn {
-            background: #6c757d;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            margin-bottom: 10px;
-        }
-        
-        .clear-btn:hover {
-            background: #5a6268;
-        }
-        
-        .token-item {
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 4px;
-            padding: 15px;
-            margin-bottom: 10px;
-        }
-        
-        .token-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-        
-        .token-name {
-            font-weight: 600;
-            color: #007acc;
-        }
-        
-        .token-status {
-            font-size: 12px;
-            padding: 2px 6px;
-            border-radius: 3px;
-        }
-        
-        .status-active {
-            background: #d4edda;
-            color: #155724;
-        }
-        
-        .status-used {
-            background: #f8d7da;
-            color: #721c24;
-        }
-        
-        .token-url {
-            font-family: monospace;
-            font-size: 12px;
-            background: white;
-            padding: 8px;
-            border-radius: 3px;
-            border: 1px solid #ddd;
-            word-break: break-all;
-            margin: 8px 0;
-        }
-        
-        .copy-btn {
-            background: #007acc;
-            color: white;
-            border: none;
-            padding: 4px 8px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 11px;
-        }
-        
-        .copy-btn:hover {
-            background: #0056b3;
-        }
-        
-        .loading {
-            text-align: center;
-            padding: 20px;
-            color: #666;
-        }
-        
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 10px;
-            border-radius: 4px;
-            margin: 10px 0;
-        }
-        
-        .success {
-            background: #d4edda;
-            color: #155724;
-            padding: 10px;
-            border-radius: 4px;
-            margin: 10px 0;
-        }
-        
-        @media (max-width: 1200px) {
-            .main-content {
-                grid-template-columns: 1fr 1fr;
-            }
-        }
-        
-        @media (max-width: 768px) {
-            .main-content {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>One-Time Download Links</h1>
-            <p>Browse files, stage selections, and create secure one-time download links</p>
-        </div>
-        
-        <div class="main-content">
-            <div class="panel">
-                <div class="panel-header">File Browser</div>
-                <div class="breadcrumb" id="breadcrumb">Loading...</div>
-                <div class="file-list" id="fileList">
-                    <div class="loading">Loading files...</div>
-                </div>
-            </div>
-            
-            <div class="panel">
-                <div class="panel-header">Staged Files</div>
-                <div class="panel-content">
-                    <button class="clear-btn" onclick="clearStaged()">Clear All</button>
-                    <div class="staged-files" id="stagedFiles">
-                        <div class="loading">No files staged</div>
-                    </div>
-                    
-                    <div class="generate-section">
-                        <div class="form-group">
-                            <label class="form-label" for="downloadName">Download Name (optional)</label>
-                            <input type="text" id="downloadName" class="form-input" placeholder="Leave empty for auto-naming">
-                        </div>
-                        <button class="generate-btn" id="generateBtn" onclick="generateStagedLink()" disabled>
-                            Generate Download Link
-                        </button>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="panel">
-                <div class="panel-header">Generated Links</div>
-                <div class="panel-content">
-                    <div id="tokenList">
-                        <div class="loading">Loading tokens...</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let currentPath = '';
-        let stagedFiles = new Map();
-        
-        async function loadFiles(path = '') {
-            try {
-                const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
-                const files = await response.json();
-                
-                currentPath = path;
-                updateBreadcrumb(path);
-                renderFiles(files);
-            } catch (error) {
-                document.getElementById('fileList').innerHTML = 
-                    '<div class="error">Error loading files: ' + error.message + '</div>';
-            }
-        }
-        
-        function updateBreadcrumb(path) {
-            const breadcrumb = document.getElementById('breadcrumb');
-            if (!path) {
-                breadcrumb.textContent = 'Home';
-                return;
-            }
-            
-            const parts = path.split('/').filter(p => p);
-            let breadcrumbHtml = '<span onclick="loadFiles(\'\')" style="cursor: pointer; color: #007acc;">Home</span>';
-            
-            let currentPath = '';
-            for (const part of parts) {
-                currentPath += (currentPath ? '/' : '') + part;
-                breadcrumbHtml += ` / <span onclick="loadFiles('${currentPath}')" style="cursor: pointer; color: #007acc;">${part}</span>`;
-            }
-            
-            breadcrumb.innerHTML = breadcrumbHtml;
-        }
-        
-        function renderFiles(files) {
-            const fileList = document.getElementById('fileList');
-            
-            if (files.length === 0) {
-                fileList.innerHTML = '<div class="loading">No files found</div>';
-                return;
-            }
-            
-            let html = '';
-            for (const file of files) {
-                const icon = file.is_dir ? '📁' : '📄';
-                const sizeText = file.size ? formatBytes(file.size) : '';
-                const isStaged = stagedFiles.has(file.path);
-                
-                html += `
-                    <div class="file-item ${isStaged ? 'selected' : ''}" onclick="handleFileClick('${file.path}', ${file.is_dir}, event)">
-                        ${file.name !== '..' ? `<input type="checkbox" class="file-checkbox" ${isStaged ? 'checked' : ''} onclick="event.stopPropagation(); toggleStaged('${file.path}', '${file.name}', ${file.is_dir}, ${file.size || 'null'})">` : ''}
-                        <span class="file-icon">${icon}</span>
-                        <span class="file-name">${file.name}</span>
-                        <span class="file-size">${sizeText}</span>
-                    </div>
-                `;
-            }
-            
-            fileList.innerHTML = html;
-        }
-        
-        function handleFileClick(path, isDir, event) {
-            if (event.target.type === 'checkbox') {
-                return; // Checkbox handles its own logic
-            }
-            
-            if (isDir && path !== '..') {
-                loadFiles(path);
-            }
-        }
-        
-        function toggleStaged(path, name, isDir, size) {
-            if (stagedFiles.has(path)) {
-                stagedFiles.delete(path);
-            } else {
-                stagedFiles.set(path, {
-                    name: name,
-                    path: path,
-                    is_dir: isDir,
-                    size: size
-                });
-            }
-            
-            renderStagedFiles();
-            updateGenerateButton();
-            
-            // Update the file list to reflect selection
-            loadFiles(currentPath);
-        }
-        
-        function renderStagedFiles() {
-            const stagedContainer = document.getElementById('stagedFiles');
-            
-            if (stagedFiles.size === 0) {
-                stagedContainer.innerHTML = '<div class="loading">No files staged</div>';
-                return;
-            }
-            
-            let html = '';
-            for (const [path, file] of stagedFiles) {
-                const icon = file.is_dir ? '📁' : '📄';
-                const sizeText = file.size ? formatBytes(file.size) : '';
-                
-                html += `
-                    <div class="staged-item">
-                        <span class="file-icon">${icon}</span>
-                        <span class="staged-name">${file.name} ${sizeText}</span>
-                        <button class="remove-btn" onclick="removeStaged('${path}')">Remove</button>
-                    </div>
-                `;
-            }
-            
-            stagedContainer.innerHTML = html;
-        }
-        
-        function removeStaged(path) {
-            stagedFiles.delete(path);
-            renderStagedFiles();
-            updateGenerateButton();
-            loadFiles(currentPath); // Refresh to update checkboxes
-        }
-        
-        function clearStaged() {
-            stagedFiles.clear();
-            renderStagedFiles();
-            updateGenerateButton();
-            loadFiles(currentPath); // Refresh to update checkboxes
-        }
-        
-        function updateGenerateButton() {
-            const generateBtn = document.getElementById('generateBtn');
-            generateBtn.disabled = stagedFiles.size === 0;
-        }
-        
-        async function generateStagedLink() {
-            if (stagedFiles.size === 0) {
-                return;
-            }
-            
-            const generateBtn = document.getElementById('generateBtn');
-            generateBtn.disabled = true;
-            generateBtn.textContent = 'Generating...';
-            
-            try {
-                const paths = Array.from(stagedFiles.keys());
-                const customName = document.getElementById('downloadName').value.trim();
-                
-                const response = await fetch('/api/generate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        paths: paths,
-                        name: customName || null
-                    }),
-                });
-                
-                if (!response.ok) {
-                    throw new Error('Failed to generate link');
+<!doctype html>
+<html lang="en" class="h-full">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>OTD - One-Time Downloads</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔗</text></svg>"
+        />
+        <style>
+            {{TAILWIND_CSS}}
+        </style>
+        <style>
+            @keyframes fade-in {
+                from {
+                    opacity: 0;
+                    transform: translateX(16px);
                 }
-                
-                const result = await response.json();
-                
-                // Clear staged files and form
-                clearStaged();
-                document.getElementById('downloadName').value = '';
-                
-                // Show success message
-                showMessage('Download link generated successfully!', 'success');
-                
-                // Refresh token list
-                loadTokens();
-                
-            } catch (error) {
-                showMessage('Error generating link: ' + error.message, 'error');
-            } finally {
-                generateBtn.disabled = false;
-                generateBtn.textContent = 'Generate Download Link';
-                updateGenerateButton();
+                to {
+                    opacity: 1;
+                    transform: translateX(0);
+                }
             }
-        }
-        
-        async function loadTokens() {
-            try {
-                const response = await fetch('/api/tokens');
-                const tokens = await response.json();
-                renderTokens(tokens);
-            } catch (error) {
-                document.getElementById('tokenList').innerHTML = 
-                    '<div class="error">Error loading tokens: ' + error.message + '</div>';
+            @keyframes pulse-bg {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.5;
+                }
             }
-        }
-        
-        function renderTokens(tokens) {
-            const tokenList = document.getElementById('tokenList');
-            
-            if (tokens.length === 0) {
-                tokenList.innerHTML = '<div class="loading">No download links generated yet</div>';
-                return;
+            .animate-fade-in {
+                animation: fade-in 0.25s ease-out;
             }
-            
-            let html = '';
-            for (const token of tokens) {
-                const status = token.downloaded ? 'used' : 'active';
-                const statusClass = token.downloaded ? 'status-used' : 'status-active';
-                const statusText = token.downloaded ? 'Used' : 'Active';
-                
-                html += `
-                    <div class="token-item">
-                        <div class="token-header">
-                            <span class="token-name">${token.name}</span>
-                            <span class="token-status ${statusClass}">${statusText}</span>
+            .animate-pulse-bg {
+                animation: pulse-bg 1.5s ease-in-out infinite;
+            }
+            .view-transition {
+                transition: opacity 0.15s ease;
+            }
+        </style>
+    </head>
+    <body class="h-full bg-surface-alt text-text antialiased">
+        <!-- Toast container -->
+        <div
+            id="toastContainer"
+            class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"
+        ></div>
+
+        <div class="min-h-full flex flex-col">
+            <!-- Header -->
+            <header class="bg-brand text-white sticky top-0 z-40">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="flex items-center justify-between h-14">
+                        <div class="flex items-center gap-4">
+                            <h1
+                                class="text-lg font-bold tracking-tight flex items-center gap-2 shrink-0"
+                            >
+                                <svg
+                                    class="w-5 h-5 text-accent"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374"
+                                    />
+                                </svg>
+                                OTD
+                            </h1>
+                            <!-- Desktop nav -->
+                            <nav
+                                id="desktopNav"
+                                class="hidden sm:flex items-center gap-1 ml-4"
+                            >
+                                <button
+                                    onclick="showView('dashboard')"
+                                    data-nav="dashboard"
+                                    class="nav-btn px-3 py-1.5 text-sm rounded-md transition-colors text-slate-300 hover:text-white hover:bg-white/10"
+                                >
+                                    Dashboard
+                                </button>
+                                <button
+                                    onclick="showView('files')"
+                                    data-nav="files"
+                                    class="nav-btn px-3 py-1.5 text-sm rounded-md transition-colors text-slate-300 hover:text-white hover:bg-white/10"
+                                >
+                                    Files
+                                </button>
+                                <button
+                                    onclick="showView('settings')"
+                                    data-nav="settings"
+                                    class="nav-btn px-3 py-1.5 text-sm rounded-md transition-colors text-slate-300 hover:text-white hover:bg-white/10"
+                                >
+                                    Settings
+                                </button>
+                            </nav>
                         </div>
-                        <div class="token-url">${token.download_url || 'N/A'}</div>
-                        <button class="copy-btn" onclick="copyToClipboard('${token.download_url || ''}')">Copy Link</button>
+                        <div class="flex items-center gap-2">
+                            <!-- Dark mode toggle -->
+                            <button
+                                id="darkToggle"
+                                onclick="toggleDarkMode()"
+                                class="p-2 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                                title="Toggle dark mode"
+                            >
+                                <svg
+                                    id="sunIcon"
+                                    class="w-4 h-4 hidden"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"
+                                    />
+                                </svg>
+                                <svg
+                                    id="moonIcon"
+                                    class="w-4 h-4"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"
+                                    />
+                                </svg>
+                            </button>
+                            <!-- Mobile menu button -->
+                            <button
+                                id="mobileMenuBtn"
+                                onclick="toggleMobileMenu()"
+                                class="sm:hidden p-2 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
+                            >
+                                <svg
+                                    class="w-5 h-5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"
+                                    />
+                                </svg>
+                            </button>
+                            <!-- Logout -->
+                            <a
+                                href="/logout"
+                                class="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-md hover:bg-white/10 transition-colors"
+                            >
+                                <svg
+                                    class="w-3.5 h-3.5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9"
+                                    />
+                                </svg>
+                                Logout
+                            </a>
+                        </div>
                     </div>
-                `;
+                </div>
+                <!-- Mobile nav drawer -->
+                <div
+                    id="mobileMenu"
+                    class="sm:hidden hidden border-t border-white/10 pb-3 px-4"
+                >
+                    <button
+                        onclick="
+                            showView('dashboard');
+                            toggleMobileMenu();
+                        "
+                        data-nav-m="dashboard"
+                        class="nav-btn-m block w-full text-left px-3 py-2 text-sm rounded-md text-slate-300 hover:text-white hover:bg-white/10 mt-1"
+                    >
+                        Dashboard
+                    </button>
+                    <button
+                        onclick="
+                            showView('files');
+                            toggleMobileMenu();
+                        "
+                        data-nav-m="files"
+                        class="nav-btn-m block w-full text-left px-3 py-2 text-sm rounded-md text-slate-300 hover:text-white hover:bg-white/10"
+                    >
+                        Files
+                    </button>
+                    <button
+                        onclick="
+                            showView('settings');
+                            toggleMobileMenu();
+                        "
+                        data-nav-m="settings"
+                        class="nav-btn-m block w-full text-left px-3 py-2 text-sm rounded-md text-slate-300 hover:text-white hover:bg-white/10"
+                    >
+                        Settings
+                    </button>
+                    <hr class="border-white/10 my-2" />
+                    <a
+                        href="/logout"
+                        class="block px-3 py-2 text-sm rounded-md text-slate-400 hover:text-white hover:bg-white/10"
+                        >Logout</a
+                    >
+                </div>
+            </header>
+
+            <!-- ============================================ -->
+            <!-- DASHBOARD VIEW                               -->
+            <!-- ============================================ -->
+            <main
+                id="view-dashboard"
+                class="view-transition flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 hidden"
+            >
+                <!-- Stat cards -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm p-4"
+                    >
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="p-2 rounded-lg bg-accent/10 text-accent"
+                            >
+                                <svg
+                                    class="w-5 h-5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374"
+                                    />
+                                </svg>
+                            </div>
+                            <div>
+                                <p class="text-xs text-text-muted font-medium">
+                                    Active Links
+                                </p>
+                                <p
+                                    id="statActive"
+                                    class="text-2xl font-bold text-text"
+                                >
+                                    -
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm p-4"
+                    >
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="p-2 rounded-lg bg-emerald-500/10 text-emerald-500"
+                            >
+                                <svg
+                                    class="w-5 h-5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"
+                                    />
+                                </svg>
+                            </div>
+                            <div>
+                                <p class="text-xs text-text-muted font-medium">
+                                    Total Downloads
+                                </p>
+                                <p
+                                    id="statDownloads"
+                                    class="text-2xl font-bold text-text"
+                                >
+                                    -
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm p-4"
+                    >
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="p-2 rounded-lg bg-amber-500/10 text-amber-500"
+                            >
+                                <svg
+                                    class="w-5 h-5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                                    />
+                                </svg>
+                            </div>
+                            <div>
+                                <p class="text-xs text-text-muted font-medium">
+                                    Used Links
+                                </p>
+                                <p
+                                    id="statUsed"
+                                    class="text-2xl font-bold text-text"
+                                >
+                                    -
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm p-4"
+                    >
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="p-2 rounded-lg bg-red-500/10 text-red-500"
+                            >
+                                <svg
+                                    class="w-5 h-5"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="2"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"
+                                    />
+                                </svg>
+                            </div>
+                            <div>
+                                <p class="text-xs text-text-muted font-medium">
+                                    Expired Links
+                                </p>
+                                <p
+                                    id="statExpired"
+                                    class="text-2xl font-bold text-text"
+                                >
+                                    -
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick actions + recent activity -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-1 space-y-4">
+                        <div
+                            class="bg-surface rounded-xl border border-border shadow-sm p-5"
+                        >
+                            <h3
+                                class="text-sm font-semibold text-text uppercase tracking-wide mb-4"
+                            >
+                                Quick Actions
+                            </h3>
+                            <div class="space-y-2">
+                                <button
+                                    onclick="showView('files')"
+                                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg border border-border hover:bg-surface-alt transition-colors text-sm text-text"
+                                >
+                                    <svg
+                                        class="w-4 h-4 text-accent"
+                                        fill="none"
+                                        viewBox="0 0 24 24"
+                                        stroke-width="2"
+                                        stroke="currentColor"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            d="M12 4.5v15m7.5-7.5h-15"
+                                        />
+                                    </svg>
+                                    New Link
+                                </button>
+                                <button
+                                    onclick="showView('files')"
+                                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg border border-border hover:bg-surface-alt transition-colors text-sm text-text"
+                                >
+                                    <svg
+                                        class="w-4 h-4 text-accent"
+                                        fill="none"
+                                        viewBox="0 0 24 24"
+                                        stroke-width="2"
+                                        stroke="currentColor"
+                                    >
+                                        <path
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                            d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"
+                                        />
+                                    </svg>
+                                    Browse Files
+                                </button>
+                            </div>
+                        </div>
+                        <div
+                            class="bg-surface rounded-xl border border-border shadow-sm p-5"
+                        >
+                            <h3
+                                class="text-sm font-semibold text-text uppercase tracking-wide mb-2"
+                            >
+                                Uptime
+                            </h3>
+                            <p
+                                id="statUptime"
+                                class="text-lg font-mono text-text-muted"
+                            >
+                                -
+                            </p>
+                        </div>
+                    </div>
+                    <div class="lg:col-span-2">
+                        <div
+                            class="bg-surface rounded-xl border border-border shadow-sm overflow-hidden"
+                        >
+                            <div
+                                class="px-5 py-3 border-b border-border bg-surface-alt"
+                            >
+                                <h3
+                                    class="text-sm font-semibold text-text uppercase tracking-wide"
+                                >
+                                    Recent Activity
+                                </h3>
+                            </div>
+                            <div
+                                id="recentActivity"
+                                class="divide-y divide-border/50 max-h-[400px] overflow-y-auto"
+                            >
+                                <div
+                                    class="p-8 text-center text-text-muted text-sm"
+                                >
+                                    Loading...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- ============================================ -->
+            <!-- FILES VIEW (3-column layout)                 -->
+            <!-- ============================================ -->
+            <main
+                id="view-files"
+                class="view-transition flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 hidden"
+            >
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+                    <!-- File Browser -->
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm flex flex-col overflow-hidden"
+                    >
+                        <div
+                            class="px-4 py-3 border-b border-border bg-surface-alt flex items-center justify-between"
+                        >
+                            <h2
+                                class="text-sm font-semibold text-text uppercase tracking-wide"
+                            >
+                                File Browser
+                            </h2>
+                            <label
+                                class="flex items-center gap-1 text-xs text-text-muted"
+                            >
+                                <input
+                                    type="checkbox"
+                                    id="selectAllCb"
+                                    class="w-3.5 h-3.5 rounded border-border text-accent focus:ring-accent cursor-pointer"
+                                />
+                                All
+                            </label>
+                        </div>
+                        <!-- Search -->
+                        <div
+                            class="px-4 py-2 border-b border-border bg-surface-alt/50"
+                        >
+                            <input
+                                type="text"
+                                id="fileSearch"
+                                placeholder="Filter files..."
+                                class="w-full px-2.5 py-1.5 text-xs border border-border rounded-md bg-surface focus:outline-none focus:ring-1 focus:ring-accent transition-all placeholder:text-text-muted/50"
+                            />
+                        </div>
+                        <div
+                            id="breadcrumb"
+                            class="px-4 py-2 border-b border-border text-sm text-text-muted bg-surface-alt/50 flex items-center gap-1 flex-wrap min-h-9"
+                        >
+                            Loading…
+                        </div>
+                        <div
+                            id="fileList"
+                            class="flex-1 overflow-y-auto divide-y divide-border/50"
+                            tabindex="0"
+                        >
+                            <div
+                                class="p-8 text-center text-text-muted text-sm"
+                            >
+                                Loading files…
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Staged Files -->
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm flex flex-col overflow-hidden"
+                    >
+                        <div
+                            class="px-4 py-3 border-b border-border bg-surface-alt flex items-center justify-between"
+                        >
+                            <h2
+                                class="text-sm font-semibold text-text uppercase tracking-wide"
+                            >
+                                Staged Files
+                            </h2>
+                            <button
+                                onclick="clearStaged()"
+                                class="text-xs text-text-muted hover:text-danger transition-colors"
+                            >
+                                Clear all
+                            </button>
+                        </div>
+                        <div
+                            id="stagedFiles"
+                            class="flex-1 overflow-y-auto divide-y divide-border/50 min-h-[120px]"
+                        >
+                            <div
+                                class="p-8 text-center text-text-muted text-sm"
+                            >
+                                <svg
+                                    class="w-8 h-8 mx-auto text-text-muted/30 mb-2"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                    stroke-width="1.5"
+                                    stroke="currentColor"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m3.75 9v6m3-3H9m1.5-12H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"
+                                    />
+                                </svg>
+                                Select files to stage
+                            </div>
+                        </div>
+                        <div class="p-4 border-t border-border space-y-3">
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label
+                                        for="maxDownloads"
+                                        class="block text-xs font-medium text-text-muted mb-1"
+                                        >Max downloads</label
+                                    >
+                                    <input
+                                        type="number"
+                                        id="maxDownloads"
+                                        min="1"
+                                        value="1"
+                                        class="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent transition-all"
+                                    />
+                                </div>
+                                <div>
+                                    <label
+                                        for="expiresIn"
+                                        class="block text-xs font-medium text-text-muted mb-1"
+                                        >Expires in</label
+                                    >
+                                    <select
+                                        id="expiresIn"
+                                        class="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent transition-all"
+                                    >
+                                        <option value="">Never</option>
+                                        <option value="300">5 min</option>
+                                        <option value="1800">30 min</option>
+                                        <option value="3600">1 hour</option>
+                                        <option value="86400">24 hours</option>
+                                        <option value="604800">7 days</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label
+                                    for="downloadName"
+                                    class="block text-xs font-medium text-text-muted mb-1"
+                                    >Download name
+                                    <span class="text-text-muted/60"
+                                        >(optional)</span
+                                    ></label
+                                >
+                                <input
+                                    type="text"
+                                    id="downloadName"
+                                    placeholder="Auto-generated if empty"
+                                    class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-accent focus:border-accent transition-all placeholder:text-text-muted/50"
+                                />
+                            </div>
+                            <button
+                                id="generateBtn"
+                                onclick="generateStagedLink()"
+                                disabled
+                                class="w-full py-2.5 px-4 text-sm font-medium rounded-lg bg-accent text-white hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+                            >
+                                Generate Download Link
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Generated Links -->
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm flex flex-col overflow-hidden"
+                    >
+                        <div
+                            class="px-4 py-3 border-b border-border bg-surface-alt flex items-center justify-between"
+                        >
+                            <h2
+                                class="text-sm font-semibold text-text uppercase tracking-wide"
+                            >
+                                Generated Links
+                            </h2>
+                            <div class="flex items-center gap-2">
+                                <button
+                                    onclick="bulkDelete('used')"
+                                    class="text-xs text-text-muted hover:text-danger transition-colors"
+                                    title="Delete all used links"
+                                >
+                                    Del Used
+                                </button>
+                                <button
+                                    onclick="bulkDelete('expired')"
+                                    class="text-xs text-text-muted hover:text-danger transition-colors"
+                                    title="Delete all expired links"
+                                >
+                                    Del Expired
+                                </button>
+                            </div>
+                        </div>
+                        <div
+                            id="tokenList"
+                            class="flex-1 overflow-y-auto p-4 space-y-3"
+                        >
+                            <div
+                                class="text-center text-text-muted text-sm py-8"
+                            >
+                                Loading…
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- ============================================ -->
+            <!-- SETTINGS VIEW                                -->
+            <!-- ============================================ -->
+            <main
+                id="view-settings"
+                class="view-transition flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 hidden"
+            >
+                <div class="max-w-2xl mx-auto space-y-6">
+                    <!-- Server Info -->
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm p-5 space-y-4"
+                    >
+                        <h3
+                            class="text-sm font-semibold text-text uppercase tracking-wide"
+                        >
+                            Server Info
+                        </h3>
+                        <div
+                            class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm"
+                        >
+                            <div
+                                class="flex justify-between py-1.5 px-3 rounded-lg bg-surface-alt"
+                            >
+                                <span class="text-text-muted">Admin</span>
+                                <span class="font-mono text-text"
+                                    >{{ADMIN_HOST}}:{{ADMIN_PORT}}</span
+                                >
+                            </div>
+                            <div
+                                class="flex justify-between py-1.5 px-3 rounded-lg bg-surface-alt"
+                            >
+                                <span class="text-text-muted">Download</span>
+                                <span class="font-mono text-text"
+                                    >{{DOWNLOAD_HOST}}:{{DOWNLOAD_PORT}}</span
+                                >
+                            </div>
+                            <div
+                                class="flex justify-between py-1.5 px-3 rounded-lg bg-surface-alt sm:col-span-2"
+                            >
+                                <span class="text-text-muted">Base Path</span>
+                                <span class="font-mono text-text truncate ml-4"
+                                    >{{BASE_PATH}}</span
+                                >
+                            </div>
+                            <div
+                                class="flex justify-between py-1.5 px-3 rounded-lg bg-surface-alt"
+                            >
+                                <span class="text-text-muted">Uptime</span>
+                                <span
+                                    id="settingsUptime"
+                                    class="font-mono text-text"
+                                    >-</span
+                                >
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Theme -->
+                    <div
+                        class="bg-surface rounded-xl border border-border shadow-sm p-5 space-y-3"
+                    >
+                        <h3
+                            class="text-sm font-semibold text-text uppercase tracking-wide"
+                        >
+                            Appearance
+                        </h3>
+                        <label
+                            class="flex items-center justify-between cursor-pointer"
+                        >
+                            <div>
+                                <p class="text-sm text-text font-medium">
+                                    Dark mode
+                                </p>
+                                <p class="text-xs text-text-muted">
+                                    Toggle between light and dark theme
+                                </p>
+                            </div>
+                            <button
+                                id="darkToggleSettings"
+                                onclick="toggleDarkMode()"
+                                class="relative w-11 h-6 rounded-full bg-slate-600 transition-colors focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+                                role="switch"
+                                aria-checked="false"
+                            >
+                                <span
+                                    id="darkKnobSettings"
+                                    class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-all"
+                                ></span>
+                            </button>
+                        </label>
+                    </div>
+
+                    <!-- Danger Zone -->
+                    <div
+                        class="bg-surface rounded-xl border border-danger/30 shadow-sm p-5 space-y-3"
+                    >
+                        <h3
+                            class="text-sm font-semibold text-danger uppercase tracking-wide"
+                        >
+                            Danger Zone
+                        </h3>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-text font-medium">
+                                    Revoke All Tokens
+                                </p>
+                                <p class="text-xs text-text-muted">
+                                    Delete all active download links
+                                </p>
+                            </div>
+                            <button
+                                onclick="confirmBulkDelete('all')"
+                                class="px-4 py-2 text-xs font-medium rounded-lg border border-danger/30 text-danger hover:bg-danger-bg transition-colors"
+                            >
+                                Revoke All
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-text font-medium">
+                                    Logout
+                                </p>
+                                <p class="text-xs text-text-muted">
+                                    End your admin session
+                                </p>
+                            </div>
+                            <a
+                                href="/logout"
+                                class="px-4 py-2 text-xs font-medium rounded-lg border border-border text-text-muted hover:bg-surface-alt transition-colors"
+                            >
+                                Logout
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Footer -->
+            <footer class="border-t border-border bg-brand text-slate-400">
+                <div
+                    class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-center gap-3 text-xs"
+                >
+                    <a href="/about" class="hover:text-white transition-colors"
+                        >About OTD</a
+                    >
+                    <span class="hidden sm:inline text-slate-600"
+                        >&middot;</span
+                    >
+                    <a
+                        href="https://arpadvoros.com"
+                        target="_blank"
+                        rel="noopener"
+                        class="hover:text-white transition-colors"
+                        >arpadvoros.com</a
+                    >
+                    <span class="hidden sm:inline text-slate-600"
+                        >&middot;</span
+                    >
+                    <a
+                        href="https://buymeacoffee.com/arpadav"
+                        target="_blank"
+                        rel="noopener"
+                        class="inline-flex items-center gap-1 hover:text-yellow-300 transition-colors"
+                    >
+                        <svg
+                            class="w-3.5 h-3.5"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                        >
+                            <path
+                                d="M20.216 6.415l-.132-.666c-.119-.598-.388-1.163-1.001-1.379-.197-.069-.42-.098-.57-.241-.152-.143-.196-.366-.231-.572-.065-.378-.125-.756-.192-1.133-.057-.325-.102-.69-.25-.987-.195-.4-.597-.634-.996-.788a5.723 5.723 0 00-.626-.194c-1-.263-2.05-.36-3.077-.416a25.834 25.834 0 00-3.7.062c-.915.083-1.88.184-2.75.5-.318.116-.646.256-.888.501-.297.302-.393.77-.177 1.146.154.267.415.456.692.58.36.162.737.284 1.123.366 1.075.238 2.189.331 3.287.37 1.218.05 2.437.01 3.65-.118.299-.033.598-.073.896-.119.352-.054.578-.513.474-.834-.124-.383-.457-.531-.834-.473-.466.074-.96.108-1.382.146-1.177.08-2.358.082-3.536.006a22.228 22.228 0 01-1.157-.107c-.086-.01-.18-.025-.258-.036-.243-.036-.484-.08-.724-.13-.111-.027-.111-.185 0-.212h.005c.277-.06.557-.108.838-.147h.002c.131-.009.263-.032.394-.048a25.076 25.076 0 013.426-.12c.674.019 1.347.067 2.017.144l.228.031c.267.04.533.088.798.145.392.085.895.113 1.07.542.055.137.08.288.111.431l.319 1.484a.237.237 0 01-.199.284h-.003c-.037.006-.075.01-.112.015a36.704 36.704 0 01-4.743.295 37.059 37.059 0 01-4.699-.304c-.14-.017-.293-.042-.417-.06-.326-.048-.649-.108-.973-.161-.393-.065-.768-.032-1.123.161-.29.16-.527.404-.675.701-.154.316-.199.66-.267 1-.069.34-.176.707-.135 1.056.087.753.613 1.365 1.37 1.502a39.69 39.69 0 0011.343.376.483.483 0 01.535.53l-.071.697-1.018 9.907c-.041.41-.047.832-.125 1.237-.122.637-.553 1.028-1.182 1.171-.577.131-1.165.185-1.76.222-.91.057-1.823.079-2.736.058-.375-.01-.745-.038-1.12-.072-.109-.01-.22-.021-.316-.056-.2-.072-.4-.2-.494-.396-.1-.21-.075-.46-.042-.69l.065-.401c.073-.452-.25-.876-.722-.876h-.006c-.364 0-.68.264-.735.623-.06.387-.129.77-.185 1.16-.022.149-.039.3-.038.451.002.357.095.706.314.982.226.283.535.46.863.552.646.18 1.326.265 2.006.313.936.069 1.873.098 2.81.064.753-.027 1.51-.088 2.243-.261.959-.226 1.636-.867 1.82-1.842.062-.33.084-.665.12-.999l1.2-11.672a.473.473 0 01.525-.423 4.3 4.3 0 002.832-.776c.862-.627 1.323-1.673 1.168-2.723zM4.67 7.808c.027-.226.092-.444.128-.67.016-.1.037-.15.137-.15h.06c.321 0 .642.015.963.03.315.013.63.036.945.052.103.006.205.016.308.022a.174.174 0 01.164.164l.075.37c.025.122-.08.233-.205.233H5.07a.39.39 0 01-.4-.401zm13.647 2.018a2.86 2.86 0 01-1.474.726l.034-.332.058-.556a.484.484 0 01.537-.435c.406.032.78-.064 1.12-.266.18-.107.391-.08.477.12.093.213-.002.472-.174.631a2.66 2.66 0 01-.578.412z"
+                            />
+                        </svg>
+                        Buy Me a Coffee
+                    </a>
+                    <span class="hidden sm:inline text-slate-600"
+                        >&middot;</span
+                    >
+                    <button
+                        onclick="
+                            copyToClipboard('bc1q...');
+                            toast('Bitcoin address copied!');
+                        "
+                        class="font-mono text-slate-500 hover:text-white transition-colors cursor-pointer"
+                        title="Copy BTC address"
+                    >
+                        ₿ bc1q...
+                    </button>
+                </div>
+            </footer>
+        </div>
+
+        <script>
+            // ======================================================
+            // Utilities
+            // ======================================================
+
+            function escapeHtml(str) {
+                if (str == null) return "";
+                return String(str)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#x27;");
             }
-            
-            tokenList.innerHTML = html;
-        }
-        
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                showMessage('Link copied to clipboard!', 'success');
-            }).catch(() => {
-                showMessage('Failed to copy link', 'error');
+
+            function formatBytes(bytes) {
+                if (!bytes) return "";
+                const k = 1024,
+                    sizes = ["B", "KB", "MB", "GB", "TB"];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return (
+                    parseFloat((bytes / Math.pow(k, i)).toFixed(1)) +
+                    " " +
+                    sizes[i]
+                );
+            }
+
+            function formatDuration(seconds) {
+                const d = Math.floor(seconds / 86400);
+                const h = Math.floor((seconds % 86400) / 3600);
+                const m = Math.floor((seconds % 3600) / 60);
+                const s = seconds % 60;
+                if (d > 0) return `${d}d ${h}h ${m}m`;
+                if (h > 0) return `${h}h ${m}m ${s}s`;
+                if (m > 0) return `${m}m ${s}s`;
+                return `${s}s`;
+            }
+
+            function formatTimeAgo(seconds) {
+                if (seconds < 60) return "just now";
+                if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+                if (seconds < 86400)
+                    return `${Math.floor(seconds / 3600)}h ago`;
+                return `${Math.floor(seconds / 86400)}d ago`;
+            }
+
+            function toast(message, type = "success") {
+                const container = document.getElementById("toastContainer");
+                const el = document.createElement("div");
+                const colors = {
+                    success:
+                        "bg-success-bg text-emerald-800 border-emerald-200 dark:text-emerald-200",
+                    error: "bg-danger-bg text-red-800 border-red-200 dark:text-red-200",
+                    info: "bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-200 dark:border-blue-800",
+                };
+                el.className = `pointer-events-auto px-4 py-2.5 rounded-lg border text-sm font-medium shadow-lg animate-fade-in flex items-center gap-2 ${colors[type] || colors.info}`;
+                el.innerHTML = `<span class="flex-1">${escapeHtml(message)}</span><button onclick="this.parentElement.remove()" class="shrink-0 opacity-60 hover:opacity-100">&times;</button>`;
+                container.appendChild(el);
+                setTimeout(() => {
+                    el.style.opacity = "0";
+                    el.style.transition = "opacity 0.3s";
+                    setTimeout(() => el.remove(), 300);
+                }, 4000);
+            }
+
+            function copyToClipboard(text) {
+                navigator.clipboard
+                    .writeText(text)
+                    .then(() => toast("Copied!"))
+                    .catch(() => toast("Copy failed", "error"));
+            }
+
+            function getFileIcon(name, isDir) {
+                if (isDir)
+                    return `<svg class="w-4 h-4 text-accent shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>`;
+                const ext = name.split(".").pop().toLowerCase();
+                const colorMap = {
+                    pdf: "text-red-400",
+                    zip: "text-amber-500",
+                    "7z": "text-amber-500",
+                    tar: "text-amber-500",
+                    gz: "text-amber-500",
+                    rar: "text-amber-500",
+                    jpg: "text-pink-400",
+                    jpeg: "text-pink-400",
+                    png: "text-pink-400",
+                    gif: "text-pink-400",
+                    svg: "text-pink-400",
+                    webp: "text-pink-400",
+                    mp4: "text-purple-400",
+                    mkv: "text-purple-400",
+                    avi: "text-purple-400",
+                    mov: "text-purple-400",
+                    mp3: "text-cyan-400",
+                    flac: "text-cyan-400",
+                    wav: "text-cyan-400",
+                    ogg: "text-cyan-400",
+                };
+                const color = colorMap[ext] || "text-text-muted/60";
+                return `<svg class="w-4 h-4 ${color} shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>`;
+            }
+
+            // ======================================================
+            // State
+            // ======================================================
+
+            let currentPath = "";
+            let currentFiles = [];
+            let stagedFiles = new Map();
+            let currentView = "dashboard";
+            let allTokens = [];
+            let focusedFileIndex = -1;
+
+            // ======================================================
+            // Dark Mode
+            // ======================================================
+
+            function initDarkMode() {
+                const saved = localStorage.getItem("otd-dark-mode");
+                const isDark =
+                    saved === "true" ||
+                    (!saved &&
+                        window.matchMedia("(prefers-color-scheme: dark)")
+                            .matches);
+                if (isDark) document.documentElement.classList.add("dark");
+                updateDarkToggleUI();
+            }
+
+            function toggleDarkMode() {
+                document.documentElement.classList.toggle("dark");
+                const isDark =
+                    document.documentElement.classList.contains("dark");
+                localStorage.setItem("otd-dark-mode", isDark);
+                updateDarkToggleUI();
+            }
+
+            function updateDarkToggleUI() {
+                const isDark =
+                    document.documentElement.classList.contains("dark");
+                document
+                    .getElementById("sunIcon")
+                    .classList.toggle("hidden", !isDark);
+                document
+                    .getElementById("moonIcon")
+                    .classList.toggle("hidden", isDark);
+                // Settings toggle
+                const settingsToggle =
+                    document.getElementById("darkToggleSettings");
+                const settingsKnob =
+                    document.getElementById("darkKnobSettings");
+                if (settingsToggle) {
+                    settingsToggle.setAttribute("aria-checked", isDark);
+                    if (isDark) {
+                        settingsToggle.classList.remove("bg-slate-600");
+                        settingsToggle.classList.add("bg-accent");
+                        settingsKnob.classList.remove("left-0.5");
+                        settingsKnob.classList.add("left-5.5");
+                    } else {
+                        settingsToggle.classList.remove("bg-accent");
+                        settingsToggle.classList.add("bg-slate-600");
+                        settingsKnob.classList.remove("left-5.5");
+                        settingsKnob.classList.add("left-0.5");
+                    }
+                }
+            }
+
+            // ======================================================
+            // Navigation
+            // ======================================================
+
+            function showView(name) {
+                currentView = name;
+                document.querySelectorAll('[id^="view-"]').forEach((el) => {
+                    el.classList.add("hidden");
+                });
+                const view = document.getElementById("view-" + name);
+                if (view) {
+                    view.classList.remove("hidden");
+                }
+                // Update nav active state
+                document.querySelectorAll(".nav-btn").forEach((b) => {
+                    b.classList.toggle("bg-white/20", b.dataset.nav === name);
+                    b.classList.toggle("text-white", b.dataset.nav === name);
+                    b.classList.toggle(
+                        "text-slate-300",
+                        b.dataset.nav !== name,
+                    );
+                });
+                document.querySelectorAll(".nav-btn-m").forEach((b) => {
+                    b.classList.toggle("bg-white/20", b.dataset.navM === name);
+                });
+                // Refresh data for the view
+                if (name === "dashboard") {
+                    loadStats();
+                    loadTokens();
+                }
+                if (name === "files") {
+                    loadFiles(currentPath);
+                    loadTokens();
+                }
+            }
+
+            function toggleMobileMenu() {
+                document
+                    .getElementById("mobileMenu")
+                    .classList.toggle("hidden");
+            }
+
+            // ======================================================
+            // Dashboard - Stats
+            // ======================================================
+
+            async function loadStats() {
+                try {
+                    const res = await fetch("/api/stats");
+                    const s = await res.json();
+                    document.getElementById("statActive").textContent =
+                        s.active_tokens;
+                    document.getElementById("statDownloads").textContent =
+                        s.total_downloads;
+                    document.getElementById("statUsed").textContent =
+                        s.used_tokens;
+                    document.getElementById("statExpired").textContent =
+                        s.expired_tokens;
+                    const uptime = formatDuration(s.uptime_seconds);
+                    document.getElementById("statUptime").textContent = uptime;
+                    const su = document.getElementById("settingsUptime");
+                    if (su) su.textContent = uptime;
+                } catch (e) {}
+            }
+
+            function renderRecentActivity(tokens) {
+                const container = document.getElementById("recentActivity");
+                if (!tokens.length) {
+                    container.innerHTML =
+                        '<div class="p-8 text-center text-text-muted text-sm"><svg class="w-8 h-8 mx-auto text-text-muted/30 mb-2" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>No activity yet</div>';
+                    return;
+                }
+                let html = "";
+                // Show at most 20 recent tokens, sorted by creation (newest first based on remaining time)
+                const recent = tokens.slice(0, 20);
+                for (const t of recent) {
+                    const count = t.download_count || 0;
+                    const isExpired = t.expired;
+                    const isUsed = count >= t.max_downloads;
+                    let statusIcon, statusColor, statusText;
+                    if (isExpired) {
+                        statusIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>`;
+                        statusColor = "text-red-500";
+                        statusText = "expired";
+                    } else if (isUsed) {
+                        statusIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>`;
+                        statusColor = "text-amber-500";
+                        statusText = `${count}/${t.max_downloads} used`;
+                    } else {
+                        statusIcon = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374"/></svg>`;
+                        statusColor = "text-accent";
+                        statusText = `${count}/${t.max_downloads} downloads`;
+                    }
+                    const expiryInfo = t.expires_in_seconds
+                        ? `expires in ${formatDuration(t.expires_in_seconds)}`
+                        : "";
+                    html += `<div class="flex items-center gap-3 px-5 py-3">
+														<span class="${statusColor} shrink-0">${statusIcon}</span>
+														<div class="flex-1 min-w-0">
+														<p class="text-sm font-medium text-text truncate">${escapeHtml(t.name)}</p>
+														<p class="text-xs text-text-muted">${statusText}${expiryInfo ? " · " + expiryInfo : ""}</p>
+														</div>
+														</div>`;
+                }
+                container.innerHTML = html;
+            }
+
+            // ======================================================
+            // File Browser
+            // ======================================================
+
+            async function loadFiles(path = "") {
+                try {
+                    const response = await fetch(
+                        `/api/browse?path=${encodeURIComponent(path)}`,
+                    );
+                    const files = await response.json();
+                    currentPath = path;
+                    currentFiles = files;
+                    focusedFileIndex = -1;
+                    updateBreadcrumb(path);
+                    renderFiles(files);
+                } catch (error) {
+                    document.getElementById("fileList").innerHTML =
+                        `<div class="p-4 text-sm text-red-600">Error: ${escapeHtml(error.message)}</div>`;
+                }
+            }
+
+            function updateBreadcrumb(path) {
+                const bc = document.getElementById("breadcrumb");
+                bc.innerHTML = "";
+                const home = document.createElement("span");
+                home.textContent = "~";
+                home.className =
+                    "cursor-pointer hover:text-accent transition-colors font-medium";
+                home.addEventListener("click", () => loadFiles(""));
+                bc.appendChild(home);
+                if (!path) return;
+                const parts = path.split("/").filter(Boolean);
+                let built = "";
+                for (const part of parts) {
+                    built += (built ? "/" : "") + part;
+                    bc.appendChild(
+                        Object.assign(document.createElement("span"), {
+                            textContent: " / ",
+                            className: "text-text-muted/40",
+                        }),
+                    );
+                    const capture = built;
+                    const span = document.createElement("span");
+                    span.textContent = part;
+                    span.className =
+                        "cursor-pointer hover:text-accent transition-colors";
+                    span.addEventListener("click", () => loadFiles(capture));
+                    bc.appendChild(span);
+                }
+            }
+
+            function renderFiles(files) {
+                const list = document.getElementById("fileList");
+                const filter = (
+                    document.getElementById("fileSearch")?.value || ""
+                ).toLowerCase();
+                const filtered = filter
+                    ? files.filter((f) => f.name.toLowerCase().includes(filter))
+                    : files;
+
+                if (!filtered.length) {
+                    list.innerHTML = `<div class="p-8 text-center text-text-muted text-sm">
+															<svg class="w-8 h-8 mx-auto text-text-muted/30 mb-2" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></svg>
+															${filter ? "No matching files" : "Empty directory"}
+															</div>`;
+                    return;
+                }
+
+                let html = "";
+                for (const f of filtered) {
+                    const staged = stagedFiles.has(f.path);
+                    const icon = getFileIcon(f.name, f.is_dir);
+                    html += `<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-alt cursor-pointer transition-colors group ${staged ? "bg-accent/5" : ""}" data-path="${escapeHtml(f.path)}" data-isdir="${f.is_dir}">`;
+                    if (f.name !== "..") {
+                        html += `<input type="checkbox" class="w-4 h-4 rounded border-border text-accent focus:ring-accent shrink-0 cursor-pointer" ${staged ? "checked" : ""} data-path="${escapeHtml(f.path)}" data-name="${escapeHtml(f.name)}" data-isdir="${f.is_dir}" data-size="${f.size || ""}">`;
+                    }
+                    html += `${icon}<span class="flex-1 text-sm font-medium truncate ${f.is_dir ? "text-text" : "text-text/80"}">${escapeHtml(f.name)}</span>`;
+                    if (f.size)
+                        html += `<span class="text-xs text-text-muted tabular-nums">${escapeHtml(formatBytes(f.size))}</span>`;
+                    html += `</div>`;
+                }
+                list.innerHTML = html;
+            }
+
+            // ======================================================
+            // Staged Files
+            // ======================================================
+
+            function toggleStaged(path, name, isDir, size) {
+                if (stagedFiles.has(path)) stagedFiles.delete(path);
+                else stagedFiles.set(path, { name, path, is_dir: isDir, size });
+                renderStagedFiles();
+                updateGenerateButton();
+                renderFiles(currentFiles);
+            }
+
+            function renderStagedFiles() {
+                const container = document.getElementById("stagedFiles");
+                if (!stagedFiles.size) {
+                    container.innerHTML = `<div class="p-8 text-center text-text-muted text-sm">
+															<svg class="w-8 h-8 mx-auto text-text-muted/30 mb-2" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m3.75 9v6m3-3H9m1.5-12H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
+															Select files to stage
+															</div>`;
+                    return;
+                }
+                let html = "";
+                for (const [path, f] of stagedFiles) {
+                    const icon = getFileIcon(f.name, f.is_dir);
+                    html += `<div class="flex items-center gap-3 px-4 py-2.5">
+															${icon}
+															<span class="flex-1 text-sm truncate">${escapeHtml(f.name)}</span>
+															${f.size ? `<span class="text-xs text-text-muted">${escapeHtml(formatBytes(f.size))}</span>` : ""}
+															<button data-path="${escapeHtml(path)}" class="remove-btn text-text-muted hover:text-danger transition-colors p-1 rounded hover:bg-danger-bg">
+															<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+															</button>
+															</div>`;
+                }
+                container.innerHTML = html;
+            }
+
+            function removeStaged(path) {
+                stagedFiles.delete(path);
+                renderStagedFiles();
+                updateGenerateButton();
+                renderFiles(currentFiles);
+            }
+            function clearStaged() {
+                stagedFiles.clear();
+                renderStagedFiles();
+                updateGenerateButton();
+                renderFiles(currentFiles);
+            }
+            function updateGenerateButton() {
+                document.getElementById("generateBtn").disabled =
+                    stagedFiles.size === 0;
+            }
+
+            // Select all
+            function handleSelectAll(checked) {
+                const checkables = currentFiles.filter((f) => f.name !== "..");
+                if (checked) {
+                    for (const f of checkables) {
+                        if (!stagedFiles.has(f.path))
+                            stagedFiles.set(f.path, {
+                                name: f.name,
+                                path: f.path,
+                                is_dir: f.is_dir,
+                                size: f.size,
+                            });
+                    }
+                } else {
+                    for (const f of checkables) stagedFiles.delete(f.path);
+                }
+                renderStagedFiles();
+                updateGenerateButton();
+                renderFiles(currentFiles);
+            }
+
+            // ======================================================
+            // Generate Link
+            // ======================================================
+
+            async function generateStagedLink() {
+                if (!stagedFiles.size) return;
+                const btn = document.getElementById("generateBtn");
+                btn.disabled = true;
+                btn.textContent = "Generating…";
+                try {
+                    const paths = Array.from(stagedFiles.keys());
+                    const customName = document
+                        .getElementById("downloadName")
+                        .value.trim();
+                    const maxDownloads =
+                        parseInt(
+                            document.getElementById("maxDownloads").value,
+                        ) || 1;
+                    const expiresIn =
+                        document.getElementById("expiresIn").value;
+                    const payload = {
+                        paths,
+                        name: customName || null,
+                        max_downloads: maxDownloads,
+                    };
+                    if (expiresIn)
+                        payload.expires_in_seconds = parseInt(expiresIn);
+                    const res = await fetch("/api/generate", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!res.ok) throw new Error("Failed to generate link");
+                    clearStaged();
+                    document.getElementById("downloadName").value = "";
+                    toast("Download link generated!");
+                    loadTokens();
+                } catch (e) {
+                    toast("Error: " + e.message, "error");
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = "Generate Download Link";
+                    updateGenerateButton();
+                }
+            }
+
+            // ======================================================
+            // Tokens
+            // ======================================================
+
+            async function loadTokens() {
+                try {
+                    const res = await fetch("/api/tokens");
+                    allTokens = await res.json();
+                    renderTokens(allTokens);
+                    if (currentView === "dashboard")
+                        renderRecentActivity(allTokens);
+                } catch (e) {
+                    document.getElementById("tokenList").innerHTML =
+                        `<div class="text-sm text-red-600 p-4">Error loading tokens</div>`;
+                }
+            }
+
+            function renderTokens(tokens) {
+                const container = document.getElementById("tokenList");
+                if (!tokens.length) {
+                    container.innerHTML = `<div class="text-center text-text-muted text-sm py-8">
+																				<svg class="w-8 h-8 mx-auto text-text-muted/30 mb-2" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m9.86-2.03a4.5 4.5 0 0 0-1.242-7.244l-4.5-4.5a4.5 4.5 0 0 0-6.364 6.364L4.34 8.374"/></svg>
+																				No links generated yet
+																				</div>`;
+                    return;
+                }
+
+                // Adaptive polling: 2s while any token is preparing, 30s otherwise
+                const hasPreparing = tokens.some(
+                    (t) => t.zip_status === "preparing",
+                );
+                updatePollingInterval(hasPreparing);
+
+                let html = "";
+                for (const t of tokens) {
+                    const count = t.download_count || 0;
+                    const isExpired = t.expired;
+                    const isUsed = count >= t.max_downloads;
+                    const isPreparing = t.zip_status === "preparing";
+                    const isFailed = t.zip_status === "failed";
+                    const isDone = isExpired || isUsed;
+
+                    // Status badge
+                    let badge;
+                    if (isExpired)
+                        badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-danger-bg text-red-700 dark:text-red-300">Expired</span>`;
+                    else if (isUsed)
+                        badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-danger-bg text-red-700 dark:text-red-300">Used</span>`;
+                    else if (isFailed)
+                        badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-danger-bg text-red-700 dark:text-red-300">Failed</span>`;
+                    else if (isPreparing)
+                        badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">Preparing</span>`;
+                    else
+                        badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-success-bg text-emerald-700 dark:text-emerald-300">Active</span>`;
+
+                    // Progress bar
+                    const pct = Math.min(
+                        100,
+                        Math.round((count / t.max_downloads) * 100),
+                    );
+                    const progressColor = isDone ? "bg-red-400" : "bg-accent";
+
+                    // Countdown
+                    let countdown = "";
+                    if (t.expires_in_seconds && !isExpired) {
+                        countdown = `<span class="text-xs text-text-muted" data-countdown="${t.expires_in_seconds}">expires in ${formatDuration(t.expires_in_seconds)}</span>`;
+                    }
+
+                    // Border color: amber while preparing
+                    const borderClass = isPreparing
+                        ? "border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10"
+                        : isDone
+                          ? "border-border bg-surface-alt/50"
+                          : "border-accent/20 bg-accent/5";
+
+                    html += `<div class="rounded-lg border ${borderClass} p-3 space-y-2 group">
+																				<div class="flex items-center justify-between">
+																				<span class="text-sm font-semibold ${isDone ? "text-text-muted line-through" : "text-text"} truncate">${escapeHtml(t.name)}</span>
+																				<div class="flex items-center gap-2">
+																				${badge}
+																				<button data-token="${escapeHtml(t.token)}" class="delete-token-btn opacity-0 group-hover:opacity-100 text-text-muted hover:text-danger transition-all p-1 rounded hover:bg-danger-bg" title="Delete">
+																				<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
+																				</button>
+																				</div>
+																				</div>
+																				<!-- Progress bar -->
+																				<div class="flex items-center gap-2">
+																				<div class="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
+																				<div class="${progressColor} h-full rounded-full transition-all" style="width:${pct}%"></div>
+																				</div>
+																				<span class="text-xs text-text-muted tabular-nums shrink-0">${count}/${t.max_downloads}</span>
+																				</div>
+																				${countdown}
+																				${
+                                                                                    isPreparing
+                                                                                        ? `<div class="text-xs text-amber-600 dark:text-amber-400 px-2.5 py-1.5 flex items-center gap-1.5">
+																				<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+																				Zip file is being prepared...
+																				</div>`
+                                                                                        : `<div class="font-mono text-xs bg-brand/5 dark:bg-white/5 rounded px-2.5 py-1.5 break-all text-text-muted select-all">${escapeHtml(t.download_url || "N/A")}</div>`
+                                                                                }
+																			${
+                                                                                !isPreparing
+                                                                                    ? `<div class="flex items-center gap-2">
+																			<button data-url="${escapeHtml(t.download_url || "")}" class="copy-btn inline-flex items-center gap-1 text-xs font-medium text-accent hover:text-accent-hover transition-colors">
+																			<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/></svg>
+																			Copy
+																			</button>
+																			</div>`
+                                                                                    : ""
+                                                                            }
+																			</div>`;
+                }
+                container.innerHTML = html;
+            }
+
+            // ======================================================
+            // Bulk delete
+            // ======================================================
+
+            async function bulkDelete(filter) {
+                try {
+                    const res = await fetch("/api/tokens/bulk-delete", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ filter }),
+                    });
+                    const data = await res.json();
+                    toast(`Removed ${data.removed} token(s)`);
+                    loadTokens();
+                    if (currentView === "dashboard") loadStats();
+                } catch (e) {
+                    toast("Error: " + e.message, "error");
+                }
+            }
+
+            function confirmBulkDelete(filter) {
+                if (
+                    confirm(
+                        `Delete ${filter === "all" ? "ALL" : filter} tokens? This cannot be undone.`,
+                    )
+                ) {
+                    bulkDelete(filter);
+                }
+            }
+
+            async function deleteToken(token) {
+                try {
+                    await fetch(`/api/tokens/${token}`, { method: "DELETE" });
+                    toast("Token deleted");
+                    loadTokens();
+                    if (currentView === "dashboard") loadStats();
+                } catch (e) {
+                    toast("Error: " + e.message, "error");
+                }
+            }
+
+            // ======================================================
+            // Countdown timers
+            // ======================================================
+
+            function updateCountdowns() {
+                document.querySelectorAll("[data-countdown]").forEach((el) => {
+                    let secs = parseInt(el.dataset.countdown);
+                    if (secs <= 0) {
+                        el.textContent = "expired";
+                        return;
+                    }
+                    secs--;
+                    el.dataset.countdown = secs;
+                    el.textContent = "expires in " + formatDuration(secs);
+                });
+            }
+
+            // ======================================================
+            // Keyboard navigation for file list
+            // ======================================================
+
+            function setupKeyboardNav() {
+                document
+                    .getElementById("fileList")
+                    .addEventListener("keydown", (e) => {
+                        const items = document
+                            .getElementById("fileList")
+                            .querySelectorAll("[data-path]");
+                        if (!items.length) return;
+                        if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            focusedFileIndex = Math.min(
+                                focusedFileIndex + 1,
+                                items.length - 1,
+                            );
+                            items[focusedFileIndex]?.scrollIntoView({
+                                block: "nearest",
+                            });
+                            items.forEach((el, i) =>
+                                el.classList.toggle(
+                                    "ring-2",
+                                    i === focusedFileIndex,
+                                ),
+                            );
+                        } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            focusedFileIndex = Math.max(
+                                focusedFileIndex - 1,
+                                0,
+                            );
+                            items[focusedFileIndex]?.scrollIntoView({
+                                block: "nearest",
+                            });
+                            items.forEach((el, i) =>
+                                el.classList.toggle(
+                                    "ring-2",
+                                    i === focusedFileIndex,
+                                ),
+                            );
+                        } else if (e.key === " " && focusedFileIndex >= 0) {
+                            e.preventDefault();
+                            const cb = items[focusedFileIndex].querySelector(
+                                'input[type="checkbox"]',
+                            );
+                            if (cb) cb.click();
+                        } else if (e.key === "Enter" && focusedFileIndex >= 0) {
+                            e.preventDefault();
+                            const item = items[focusedFileIndex];
+                            if (item.dataset.isdir === "true")
+                                loadFiles(item.dataset.path);
+                        }
+                    });
+            }
+
+            // ======================================================
+            // Event Delegation
+            // ======================================================
+
+            document.addEventListener("DOMContentLoaded", () => {
+                initDarkMode();
+
+                document
+                    .getElementById("fileList")
+                    .addEventListener("click", (e) => {
+                        const cb = e.target.closest('input[type="checkbox"]');
+                        if (cb) {
+                            toggleStaged(
+                                cb.dataset.path,
+                                cb.dataset.name,
+                                cb.dataset.isdir === "true",
+                                cb.dataset.size
+                                    ? parseInt(cb.dataset.size)
+                                    : null,
+                            );
+                            return;
+                        }
+                        const item = e.target.closest("[data-path]");
+                        if (item && item.dataset.isdir === "true")
+                            loadFiles(item.dataset.path);
+                    });
+
+                document
+                    .getElementById("tokenList")
+                    .addEventListener("click", (e) => {
+                        const copyBtn = e.target.closest(".copy-btn");
+                        if (copyBtn) {
+                            copyToClipboard(copyBtn.dataset.url);
+                            return;
+                        }
+                        const delBtn = e.target.closest(".delete-token-btn");
+                        if (delBtn) deleteToken(delBtn.dataset.token);
+                    });
+
+                document
+                    .getElementById("stagedFiles")
+                    .addEventListener("click", (e) => {
+                        const btn = e.target.closest(".remove-btn");
+                        if (btn) removeStaged(btn.dataset.path);
+                    });
+
+                document
+                    .getElementById("fileSearch")
+                    .addEventListener("input", () => renderFiles(currentFiles));
+
+                document
+                    .getElementById("selectAllCb")
+                    .addEventListener("change", (e) =>
+                        handleSelectAll(e.target.checked),
+                    );
+
+                setupKeyboardNav();
+
+                // Start on dashboard
+                showView("dashboard");
             });
-        }
-        
-        function showMessage(message, type) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = type;
-            messageDiv.textContent = message;
-            messageDiv.style.position = 'fixed';
-            messageDiv.style.top = '20px';
-            messageDiv.style.right = '20px';
-            messageDiv.style.zIndex = '1000';
-            messageDiv.style.padding = '10px 15px';
-            messageDiv.style.borderRadius = '4px';
-            
-            document.body.appendChild(messageDiv);
-            
-            setTimeout(() => {
-                document.body.removeChild(messageDiv);
-            }, 3000);
-        }
-        
-        function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        }
-        
-        // Initialize the app
-        loadFiles();
-        loadTokens();
-        
-        // Refresh tokens every 30 seconds
-        setInterval(loadTokens, 30000);
-    </script>
-</body>
+
+            // ======================================================
+            // Init
+            // ======================================================
+
+            // Adaptive polling: faster while any zip is preparing
+            let tokenPollId = null;
+            let currentPollMs = 30000;
+            function updatePollingInterval(hasPreparing) {
+                const targetMs = hasPreparing ? 2000 : 30000;
+                if (targetMs !== currentPollMs) {
+                    if (tokenPollId) clearInterval(tokenPollId);
+                    currentPollMs = targetMs;
+                    tokenPollId = setInterval(loadTokens, currentPollMs);
+                }
+            }
+
+            loadFiles();
+            loadTokens();
+            loadStats();
+            tokenPollId = setInterval(loadTokens, 30000);
+            setInterval(loadStats, 30000);
+            setInterval(updateCountdowns, 1000);
+        </script>
+    </body>
 </html>

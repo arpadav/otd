@@ -27,9 +27,8 @@
 //!     .content_disposition("attachment; filename=\"example.txt\"")
 //!     .body_bytes(file_data);
 //! ```
-
-use std::collections::HashMap;
-
+//!
+//! Author: aav
 /// HTTP response builder that provides a fluent interface for constructing responses.
 ///
 /// This struct allows you to build HTTP responses with proper status codes, headers,
@@ -49,12 +48,16 @@ use std::collections::HashMap;
 /// assert!(String::from_utf8_lossy(&bytes).contains("Hello, world!"));
 /// ```
 pub struct HttpResponse {
+    /// HTTP status code (e.g., 200, 404, 500)
     status_code: u16,
+    /// HTTP status text (e.g., "OK", "Not Found", "Internal Server Error")
     status_text: &'static str,
-    headers: HashMap<String, String>,
+    /// HTTP headers as (key, value) pairs. Keys are always static string literals.
+    headers: Vec<(&'static str, String)>,
+    /// Response body as raw bytes
     body: Vec<u8>,
 }
-
+/// [`HttpResponse`] implementation
 impl HttpResponse {
     /// Creates a new HTTP response with the specified status code and text.
     ///
@@ -74,7 +77,7 @@ impl HttpResponse {
         Self {
             status_code,
             status_text,
-            headers: HashMap::new(),
+            headers: Vec::new(),
             body: Vec::new(),
         }
     }
@@ -95,8 +98,8 @@ impl HttpResponse {
     ///     .header("Cache-Control", "no-cache")
     ///     .header("X-Custom-Header", "custom-value");
     /// ```
-    pub fn header(mut self, key: &str, value: &str) -> Self {
-        self.headers.insert(key.to_string(), value.to_string());
+    pub fn header(mut self, key: &'static str, value: &str) -> Self {
+        self.headers.push((key, value.to_string()));
         self
     }
 
@@ -136,7 +139,9 @@ impl HttpResponse {
         self.header("Content-Disposition", disposition)
     }
 
-    /// Sets the response body to the provided text and automatically sets Content-Length.
+    /// Sets the response body to the provided text.
+    ///
+    /// `Content-Length` is computed automatically at serialization time.
     ///
     /// # Arguments
     ///
@@ -152,11 +157,13 @@ impl HttpResponse {
     /// ```
     pub fn body_text(mut self, text: &str) -> Self {
         self.body = text.as_bytes().to_vec();
-        let content_length = self.body.len().to_string();
-        self.header("Content-Length", &content_length)
+        self
     }
 
-    /// Sets the response body to JSON-serialized data and sets appropriate headers.
+    /// Sets the response body to JSON-serialized data and sets `Content-Type`
+    /// to `application/json`.
+    ///
+    /// `Content-Length` is computed automatically at serialization time.
     ///
     /// # Arguments
     ///
@@ -180,13 +187,13 @@ impl HttpResponse {
     pub fn body_json<T: serde::Serialize>(mut self, data: &T) -> Result<Self, serde_json::Error> {
         let json = serde_json::to_string(data)?;
         self.body = json.as_bytes().to_vec();
-        let content_length = self.body.len().to_string();
-        Ok(self
-            .content_type("application/json")
-            .header("Content-Length", &content_length))
+        self.headers.retain(|(k, _)| *k != "Content-Type");
+        Ok(self.content_type(content_type::JSON))
     }
 
-    /// Sets the response body to raw bytes and automatically sets Content-Length.
+    /// Sets the response body to raw bytes.
+    ///
+    /// `Content-Length` is computed automatically at serialization time.
     ///
     /// # Arguments
     ///
@@ -204,8 +211,60 @@ impl HttpResponse {
     /// ```
     pub fn body_bytes(mut self, bytes: Vec<u8>) -> Self {
         self.body = bytes;
-        let content_length = self.body.len().to_string();
-        self.header("Content-Length", &content_length)
+        self
+    }
+
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// Serializes the status line, headers, and a computed `Content-Length`
+    /// into the wire format prefix (everything before the body).
+    ///
+    /// `Content-Length` is always derived from `self.body.len()` here — it is
+    /// never stored as a builder header — so duplicates are structurally impossible.
+    ///
+    /// # Returns
+    ///
+    /// [`String`] containing the HTTP status line and headers, ready to be sent before the body.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::ok()
+    ///     .header("Content-Type", "text/plain")
+    ///     .body_text("Hello, World!");
+    ///
+    /// assert_eq!(
+    ///     response.init_response(),
+    ///     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\n"
+    /// );
+    /// ```
+    fn init_response(&self) -> String {
+        let mut response = String::with_capacity(256);
+        let digits = [
+            b'0' + (self.status_code / 100) as u8,
+            b'0' + ((self.status_code / 10) % 10) as u8,
+            b'0' + (self.status_code % 10) as u8,
+        ];
+        response.push_str("HTTP/1.1 ");
+        #[allow(
+            clippy::unwrap_used,
+            reason = "digits are guaranteed ASCII - status codes are 100..=599"
+        )]
+        response.push_str(std::str::from_utf8(&digits).unwrap());
+        response.push(' ');
+        response.push_str(self.status_text);
+        response.push_str("\r\n");
+        self.headers.iter().for_each(|(key, value)| {
+            response.push_str(key);
+            response.push_str(": ");
+            response.push_str(value);
+            response.push_str("\r\n");
+        });
+        response.push_str("Content-Length: ");
+        response.push_str(&self.body.len().to_string());
+        response.push_str("\r\n\r\n");
+        response
     }
 
     /// Converts the response to a string representation (useful for text responses).
@@ -225,15 +284,8 @@ impl HttpResponse {
     /// assert!(response_str.contains("Hello"));
     /// ```
     pub fn to_string_response(self) -> String {
-        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
-        
-        for (key, value) in &self.headers {
-            response.push_str(&format!("{key}: {value}\r\n"));
-        }
-        
-        response.push_str("\r\n");
+        let mut response = self.init_response();
         response.push_str(&String::from_utf8_lossy(&self.body));
-        
         response
     }
 
@@ -253,15 +305,7 @@ impl HttpResponse {
     /// assert!(bytes.len() > 0);
     /// ```
     pub fn to_bytes(self) -> Vec<u8> {
-        let mut response = format!("HTTP/1.1 {} {}\r\n", self.status_code, self.status_text);
-        
-        for (key, value) in &self.headers {
-            response.push_str(&format!("{key}: {value}\r\n"));
-        }
-        
-        response.push_str("\r\n");
-        
-        let mut bytes = response.into_bytes();
+        let mut bytes = self.init_response().into_bytes();
         bytes.extend(self.body);
         bytes
     }
@@ -273,14 +317,22 @@ impl HttpResponse {
 pub mod status {
     /// 200 OK - Request succeeded
     pub const OK: (u16, &str) = (200, "OK");
+    /// 202 Accepted - Request accepted but not yet completed
+    pub const ACCEPTED: (u16, &str) = (202, "Accepted");
+    /// 302 Found - Temporary redirect
+    pub const FOUND: (u16, &str) = (302, "Found");
     /// 400 Bad Request - Invalid request syntax
     pub const BAD_REQUEST: (u16, &str) = (400, "Bad Request");
+    /// 401 Unauthorized - Authentication required
+    pub const UNAUTHORIZED: (u16, &str) = (401, "Unauthorized");
     /// 403 Forbidden - Server understood but refuses to authorize
     pub const FORBIDDEN: (u16, &str) = (403, "Forbidden");
     /// 404 Not Found - Requested resource not found
     pub const NOT_FOUND: (u16, &str) = (404, "Not Found");
     /// 410 Gone - Resource no longer available
     pub const GONE: (u16, &str) = (410, "Gone");
+    /// 413 Payload Too Large - Request body exceeds server limits
+    pub const PAYLOAD_TOO_LARGE: (u16, &str) = (413, "Payload Too Large");
     /// 500 Internal Server Error - Server encountered an error
     pub const INTERNAL_SERVER_ERROR: (u16, &str) = (500, "Internal Server Error");
 }
@@ -300,8 +352,7 @@ pub mod content_type {
     /// Plain text
     pub const PLAIN_TEXT: &str = "text/plain";
 }
-
-/// Convenience methods for common HTTP responses.
+/// [`HttpResponse`] implementation
 impl HttpResponse {
     /// Creates a 200 OK response.
     ///
@@ -326,8 +377,7 @@ impl HttpResponse {
     /// let response = HttpResponse::bad_request();
     /// ```
     pub fn bad_request() -> Self {
-        Self::new(status::BAD_REQUEST.0, status::BAD_REQUEST.1)
-            .body_text("Bad Request")
+        Self::new(status::BAD_REQUEST.0, status::BAD_REQUEST.1).body_text("Bad Request")
     }
 
     /// Creates a 403 Forbidden response with default message.
@@ -340,8 +390,7 @@ impl HttpResponse {
     /// let response = HttpResponse::forbidden();
     /// ```
     pub fn forbidden() -> Self {
-        Self::new(status::FORBIDDEN.0, status::FORBIDDEN.1)
-            .body_text("Forbidden")
+        Self::new(status::FORBIDDEN.0, status::FORBIDDEN.1).body_text("Forbidden")
     }
 
     /// Creates a 404 Not Found response with default message.
@@ -354,8 +403,7 @@ impl HttpResponse {
     /// let response = HttpResponse::not_found();
     /// ```
     pub fn not_found() -> Self {
-        Self::new(status::NOT_FOUND.0, status::NOT_FOUND.1)
-            .body_text("Not Found")
+        Self::new(status::NOT_FOUND.0, status::NOT_FOUND.1).body_text("Not Found")
     }
 
     /// Creates a 410 Gone response with message about expired download links.
@@ -368,8 +416,68 @@ impl HttpResponse {
     /// let response = HttpResponse::gone();
     /// ```
     pub fn gone() -> Self {
-        Self::new(status::GONE.0, status::GONE.1)
-            .body_text("Download link has already been used")
+        Self::new(status::GONE.0, status::GONE.1).body_text("Download link has already been used")
+    }
+
+    /// Creates a 202 Accepted response.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::accepted();
+    /// ```
+    pub fn accepted() -> Self {
+        Self::new(status::ACCEPTED.0, status::ACCEPTED.1)
+    }
+
+    /// Creates a 302 redirect response.
+    ///
+    /// # Arguments
+    ///
+    /// * `location` - URL to redirect to
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::redirect("/login");
+    /// ```
+    pub fn redirect(location: &str) -> Self {
+        Self::new(status::FOUND.0, status::FOUND.1)
+            .header("Location", location)
+            .body_text("")
+    }
+
+    /// Creates a 401 Unauthorized response with WWW-Authenticate header.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::unauthorized("otd-admin");
+    /// ```
+    pub fn unauthorized(realm: &str) -> Self {
+        Self::new(status::UNAUTHORIZED.0, status::UNAUTHORIZED.1)
+            .header("WWW-Authenticate", &format!("Bearer realm=\"{realm}\""))
+            .body_text("Unauthorized")
+    }
+
+    /// Creates a 413 Payload Too Large response.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::payload_too_large();
+    /// ```
+    pub fn payload_too_large() -> Self {
+        Self::new(status::PAYLOAD_TOO_LARGE.0, status::PAYLOAD_TOO_LARGE.1)
+            .body_text("Request too large")
     }
 
     /// Creates a 500 Internal Server Error response with default message.
@@ -382,8 +490,26 @@ impl HttpResponse {
     /// let response = HttpResponse::internal_server_error();
     /// ```
     pub fn internal_server_error() -> Self {
-        Self::new(status::INTERNAL_SERVER_ERROR.0, status::INTERNAL_SERVER_ERROR.1)
-            .body_text("Internal Server Error")
+        Self::new(
+            status::INTERNAL_SERVER_ERROR.0,
+            status::INTERNAL_SERVER_ERROR.1,
+        )
+        .body_text("Internal Server Error")
+    }
+
+    /// Sets Content-Disposition to `attachment` with the given filename.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use otd::http::HttpResponse;
+    ///
+    /// let response = HttpResponse::ok()
+    ///     .attachment("report.pdf")
+    ///     .body_bytes(vec![]);
+    /// ```
+    pub fn attachment(self, filename: &str) -> Self {
+        self.content_disposition(&format!("attachment; filename=\"{filename}\""))
     }
 }
 
@@ -396,7 +522,7 @@ mod tests {
         let response = HttpResponse::ok().body_text("Hello");
         let bytes = response.to_bytes();
         let response_str = String::from_utf8_lossy(&bytes);
-        
+
         assert!(response_str.contains("HTTP/1.1 200 OK"));
         assert!(response_str.contains("Content-Length: 5"));
         assert!(response_str.contains("Hello"));
@@ -408,7 +534,7 @@ mod tests {
         let response = HttpResponse::ok().body_json(&data).unwrap();
         let bytes = response.to_bytes();
         let response_str = String::from_utf8_lossy(&bytes);
-        
+
         assert!(response_str.contains("application/json"));
         assert!(response_str.contains("test"));
         assert!(response_str.contains("value"));
@@ -420,10 +546,10 @@ mod tests {
             .content_type(content_type::OCTET_STREAM)
             .content_disposition("attachment; filename=\"test.txt\"")
             .body_bytes(b"file content".to_vec());
-        
+
         let bytes = response.to_bytes();
         let response_str = String::from_utf8_lossy(&bytes);
-        
+
         assert!(response_str.contains("application/octet-stream"));
         assert!(response_str.contains("attachment; filename=\"test.txt\""));
         assert!(response_str.contains("Content-Length: 12"));
