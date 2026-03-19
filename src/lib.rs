@@ -45,7 +45,7 @@
 //! #[apply(main!)]
 //! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //!     let config = Config::load()?;
-//!     let server = Server::new(config);
+//!     let server = Server::new(config)?;
 //!     server.run().await
 //! }
 //! ```
@@ -62,7 +62,7 @@ pub mod types;
 // --------------------------------------------------
 // re-exports
 // --------------------------------------------------
-pub use config::Config;
+pub use config::{Config, ParsedConfig};
 pub use handlers::Handler;
 pub use server::Server;
 pub use types::*;

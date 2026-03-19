@@ -18,7 +18,7 @@ use std::{
 /// Tracks the lifecycle of a zip archive for a download item.
 #[derive(Debug)]
 pub enum ZipState {
-    /// Single-file download — no zip needed
+    /// Single-file download - no zip needed
     NotNeeded,
     /// Zip is being created in the background
     Preparing,
@@ -47,7 +47,7 @@ pub struct DownloadItem {
     pub download_count: AtomicU32,
     /// Optional expiration time for the download link (None if it does not expire)
     pub expires_at: Option<std::time::Instant>,
-    ///
+    /// When this download item was created
     pub created_at: std::time::Instant,
     /// Zip preparation state (interior-mutable; never held across .await)
     pub zip_state: std::sync::RwLock<ZipState>,
