@@ -1,8 +1,8 @@
 # TODO's
 
 // 1. Clean up code, generally
-2. Add more tracing, `tracing::trace!`, `tracing::debug!`, `tracing::info!`, `tracing::warn!`, `tracing::error!`
-3. Tracing to go to logs directory, add logs to `.gitignore`
+// 2. Add more tracing, `tracing::trace!`, `tracing::debug!`, `tracing::info!`, `tracing::warn!`, `tracing::error!`
+// 3. Tracing to go to logs directory, add logs to `.gitignore`
 // 4. Dockerize, make `Dockerfile`, make `docker-compose.yml`, etc.
 // 5. Web UI accessible with password
 6. Verify documentation is accurate, check rustdocs and look for mistakes/missing
