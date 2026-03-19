@@ -5,32 +5,70 @@
 //! It implements a clean separation between admin and download functionality.
 //!
 //! Author: aav
+// --------------------------------------------------
+// mods
+// --------------------------------------------------
 mod browse;
 pub(crate) mod download;
 mod links;
 
+// --------------------------------------------------
+// local
+// --------------------------------------------------
 use crate::{config::ParsedConfig, http::*, types::*};
 
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use std::{
     collections::HashMap,
-    fmt::Write,
     path::PathBuf,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
 };
 use uuid::Uuid;
 
+// --------------------------------------------------
+// constants
+// --------------------------------------------------
 /// Maximum number of HTTP headers to parse per request.
 const MAX_PARSE_HEADERS: usize = 64;
 /// Cookie name used for admin session tracking.
 const SESSION_COOKIE_NAME: &str = "otd_session";
 /// Maximum session age (24 hours).
-const SESSION_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const SESSION_MAX_AGE: std::time::Duration = std::time::Duration::from_hours(24);
 /// Max-Age value for session cookies (seconds, as string).
 const SESSION_COOKIE_MAX_AGE: &str = "86400";
 /// WWW-Authenticate realm for bearer token auth.
 const AUTH_REALM: &str = "otd-admin";
 /// Separator between HTTP headers and body.
 const HEADER_BODY_SEPARATOR: &str = "\r\n\r\n";
+
+/// HTTP method constants
+mod method {
+    pub const GET: &str = "GET";
+    pub const POST: &str = "POST";
+    pub const DELETE: &str = "DELETE";
+}
+/// HTTP route constants
+mod route {
+    pub const ROOT: &str = "/";
+    pub const ABOUT: &str = "/about";
+    pub const LOGIN: &str = "/login";
+    pub const LOGOUT: &str = "/logout";
+    pub const API_BROWSE: &str = "/api/browse";
+    pub const API_STATS: &str = "/api/stats";
+    pub const API_TOKENS: &str = "/api/tokens";
+    pub const API_GENERATE: &str = "/api/generate";
+    pub const API_TOKENS_BULK_DELETE: &str = "/api/tokens/bulk-delete";
+    pub const API_TOKENS_PREFIX: &str = "/api/tokens/";
+}
+/// HTTP header name constants
+mod header_name {
+    pub const AUTHORIZATION: &str = "Authorization";
+    pub const BEARER_PREFIX: &str = "Bearer ";
+    pub const COOKIE: &str = "Cookie";
+    pub const SET_COOKIE: &str = "Set-Cookie";
+}
 
 /// Main request handler containing business logic for both admin and download servers.
 ///
@@ -64,7 +102,7 @@ pub struct Handler {
     /// Cached Set-Cookie header for logout (session clear)
     logout_cookie: Arc<str>,
 }
-
+/// [`Handler`] implementation
 impl Handler {
     /// Creates a new handler with the given state and pre-parsed configuration.
     ///
@@ -119,7 +157,8 @@ impl Handler {
 
     /// Handles requests to the admin interface (file browsing, link generation).
     ///
-    /// Routes admin requests to appropriate handlers based on the HTTP method and path.
+    /// Orchestrates the admin request pipeline: parse → authenticate → log →
+    /// split path → verify session → handle login → route to handler.
     ///
     /// # Examples
     ///
@@ -144,150 +183,41 @@ impl Handler {
         let mut req = httparse::Request::new(&mut headers);
         match req.parse(request.as_bytes()) {
             Ok(_) => {
-                // Bearer token authentication - enforced when admin_token is configured.
-                if let Some(ref expected_token) = self.config.raw.admin_token {
-                    let auth_header = req
-                        .headers
-                        .iter()
-                        .find(|h| h.name.eq_ignore_ascii_case("Authorization"));
-                    let authorized = auth_header
-                        .and_then(|h| std::str::from_utf8(h.value).ok())
-                        .and_then(|v| v.strip_prefix("Bearer "))
-                        .map(|token| token.trim() == expected_token.as_str())
-                        .unwrap_or(false);
-                    if !authorized {
-                        tracing::warn!(
-                            "Admin request rejected: missing or invalid Authorization header"
-                        );
-                        return Ok(HttpResponse::unauthorized(AUTH_REALM).to_bytes());
+                if let Some(bytes) = self.verify_bearer_auth(&req) {
+                    return Ok(bytes);
+                }
+
+                let method = req.method.unwrap_or(method::GET);
+                let path = req.path.unwrap_or(route::ROOT);
+                match method {
+                    method::POST | method::DELETE | "PUT" | "PATCH" => {
+                        tracing::info!("Admin request: {method} {path} from {peer_addr}");
+                    }
+                    _ => {
+                        tracing::debug!("Admin request: {method} {path}");
                     }
                 }
-                let method = req.method.unwrap_or("GET");
-                let path = req.path.unwrap_or("/");
-                tracing::info!("Admin request: {} {}", method, path);
+
                 let (path, query) = Self::split_path_query(path);
-                tracing::info!("Parsed path: '{}', query: '{}'", path, query);
+                tracing::trace!("Parsed path: '{path}', query: '{query}'");
+
                 let is_loopback = peer_addr.ip().is_loopback();
-                if !is_loopback {
-                    // Check if admin_password is configured
-                    if self.config.raw.admin_password.is_none() {
-                        let html = self.login_page(
-                            "External access requires admin_password to be set in config.",
-                        );
-                        return Ok(HttpResponse::new(status::FORBIDDEN.0, status::FORBIDDEN.1)
-                            .content_type(content_type::HTML)
-                            .body_text(&html)
-                            .to_bytes());
-                    }
-
-                    // Allow login routes without session
-                    let is_login_route = path == "/login";
-                    if !is_login_route {
-                        let session_token = Self::extract_session_token(&req);
-
-                        let mut valid_session = false;
-                        if let Some(token) = session_token {
-                            let sessions = self.state.sessions.read().await;
-                            if let Some(created) = sessions.get(token)
-                                && created.elapsed() < SESSION_MAX_AGE
-                            {
-                                valid_session = true;
-                            }
-                        }
-
-                        // Clean up expired sessions (best-effort, don't block)
-                        if !valid_session {
-                            let mut sessions = self.state.sessions.write().await;
-                            sessions.retain(|_, created| created.elapsed() < SESSION_MAX_AGE);
-                        }
-
-                        if !valid_session {
-                            return Ok(HttpResponse::redirect("/login").to_bytes());
-                        }
-                    }
+                if let Some(bytes) = self.verify_session(&req, path, is_loopback).await {
+                    return Ok(bytes);
                 }
 
-                // --- Login routes ---
-                if path == "/login" {
-                    if method == "GET" {
-                        let html = self.login_page("");
-                        return Ok(HttpResponse::ok()
-                            .content_type(content_type::HTML)
-                            .body_text(&html)
-                            .to_bytes());
-                    } else if method == "POST" {
-                        let body = self.extract_body(request)?;
-                        let params = self.parse_query(&body);
-                        let password = params.get("password").cloned().unwrap_or_default();
-
-                        let expected = self.config.raw.admin_password.as_deref().unwrap_or("");
-                        if !expected.is_empty() && password == expected {
-                            let token = Uuid::new_v4().to_string();
-                            self.state
-                                .sessions
-                                .write()
-                                .await
-                                .insert(token.clone(), std::time::Instant::now());
-                            return Ok(HttpResponse::redirect("/")
-                                .header("Set-Cookie", &Self::session_set_cookie(&token))
-                                .to_bytes());
-                        } else {
-                            let html = self.login_page("Invalid password.");
-                            return Ok(HttpResponse::new(status::FORBIDDEN.0, status::FORBIDDEN.1)
-                                .content_type(content_type::HTML)
-                                .body_text(&html)
-                                .to_bytes());
-                        }
-                    }
+                if let Some(result) = self.handle_login(method, path, request).await {
+                    return result;
                 }
 
-                // Extract session cookie for use in route handlers (e.g. logout)
-                let session_cookie = Self::extract_session_token(&req)
-                    .map(|s| s.to_string());
-
-                let response = match (method, path) {
-                    ("GET", "/") => self.web_interface().await?,
-                    ("GET", "/about") => self.about_page().await?,
-                    ("GET", "/api/browse") => self.browse(query).await?,
-                    ("GET", "/api/stats") => self.stats().await?,
-                    ("GET", "/api/tokens") => self.list_tokens().await?,
-                    ("POST", "/api/generate") => {
-                        let body = self.extract_body(request)?;
-                        self.generate_link(&body).await?
-                    }
-                    ("POST", "/api/tokens/bulk-delete") => {
-                        let body = self.extract_body(request)?;
-                        self.bulk_delete_tokens(&body).await?
-                    }
-                    ("DELETE", path) if path.starts_with("/api/tokens/") => {
-                        let token = path.strip_prefix("/api/tokens/").unwrap_or("");
-                        self.delete_token(token).await?
-                    }
-                    ("GET", "/logout") => {
-                        // Invalidate session server-side before clearing cookie
-                        if let Some(ref token) = session_cookie {
-                            self.state.sessions.write().await.remove(token);
-                            tracing::info!("Session invalidated on logout");
-                        }
-                        HttpResponse::redirect("/login").header(
-                            "Set-Cookie",
-                            &self.logout_cookie,
-                        )
-                    }
-                    ("GET", path) if path.starts_with("/config/one-time/") => {
-                        let enabled = path
-                            .strip_prefix("/config/one-time/")
-                            .and_then(|s| s.parse::<bool>().ok())
-                            .unwrap_or(true);
-                        self.config_one_time(enabled).await?
-                    }
-                    _ => HttpResponse::not_found(),
-                };
-
+                let session_cookie = helpers::extract_session_token(&req).map(|s| s.to_string());
+                let response = self
+                    .route_admin_request(method, path, query, request, session_cookie)
+                    .await?;
                 Ok(response.to_bytes())
             }
             Err(e) => {
-                tracing::error!("Failed to parse HTTP request: {}", e);
+                tracing::error!("Failed to parse HTTP request: {e}");
                 Ok(HttpResponse::bad_request().to_bytes())
             }
         }
@@ -305,42 +235,249 @@ impl Handler {
     /// # let handler = Handler::new(state, config);
     /// # smol::block_on(async {
     /// let request = "GET /document.pdf?k=550e8400-e29b-41d4-a716-446655440000 HTTP/1.1\r\n\r\n";
-    /// let response = handler.handle_download_request(request).await.unwrap();
+    /// let peer_addr: std::net::SocketAddr = "192.168.1.10:54321".parse().unwrap();
+    /// let response = handler.handle_download_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
     pub async fn handle_download_request(
         &self,
         request: &str,
+        peer_addr: std::net::SocketAddr,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut headers = [httparse::EMPTY_HEADER; MAX_PARSE_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
 
         match req.parse(request.as_bytes()) {
             Ok(_) => {
-                let method = req.method.unwrap_or("GET");
-                let path = req.path.unwrap_or("/");
+                let method = req.method.unwrap_or(method::GET);
+                let path = req.path.unwrap_or(route::ROOT);
+                tracing::info!("Download request from {peer_addr}: {method} {path}");
 
-                let (path, query) = Self::split_path_query(path);
+                let (_, query) = Self::split_path_query(path);
 
-                let response = match (method, path) {
-                    ("GET", "/") => self.download(query).await?,
-                    ("GET", _) => self.download(query).await?, // Any path with ?k= parameter
+                let response = match method {
+                    method::GET => self.download(query, peer_addr).await?,
                     _ => HttpResponse::not_found(),
                 };
 
                 Ok(response.to_bytes())
             }
             Err(e) => {
-                tracing::error!("Failed to parse download request: {}", e);
+                tracing::error!("Failed to parse download request from {peer_addr}: {e}");
                 Ok(HttpResponse::bad_request().to_bytes())
             }
         }
     }
-}
 
-// --- Small page and config handlers ---
+    /// Checks the `Authorization: Bearer <token>` header against the configured admin token.
+    ///
+    /// # Arguments
+    ///
+    /// * `req` - The parsed HTTP request to check
+    ///
+    /// # Returns
+    ///
+    /// `None` if auth passes or no token is configured; `Some(401_bytes)` if auth fails.
+    fn verify_bearer_auth(&self, req: &httparse::Request<'_, '_>) -> Option<Vec<u8>> {
+        let expected_token = self.config.raw.admin_token.as_ref()?;
+        let auth_header = req
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(header_name::AUTHORIZATION));
+        let authorized = auth_header
+            .and_then(|h| std::str::from_utf8(h.value).ok())
+            .and_then(|v| v.strip_prefix(header_name::BEARER_PREFIX))
+            .map(|token| token.trim() == expected_token.as_str())
+            .unwrap_or(false);
+        if authorized {
+            None
+        } else {
+            tracing::warn!("Admin request rejected: missing or invalid Authorization header");
+            Some(HttpResponse::unauthorized(AUTH_REALM).to_bytes())
+        }
+    }
 
-impl Handler {
+    /// Validates the session for non-loopback requests.
+    ///
+    /// Skips validation for loopback addresses and login routes. For external
+    /// requests, checks that a valid session cookie exists and cleans up expired
+    /// sessions on failure.
+    ///
+    /// # Arguments
+    ///
+    /// * `req` - The parsed HTTP request containing cookies
+    /// * `path` - The request path (login route is exempt from session checks)
+    /// * `is_loopback` - Whether the request originates from a loopback address
+    ///
+    /// # Returns
+    ///
+    /// `None` if session is valid or not required; `Some(redirect_bytes)` or
+    /// `Some(forbidden_bytes)` otherwise.
+    async fn verify_session(
+        &self,
+        req: &httparse::Request<'_, '_>,
+        path: &str,
+        is_loopback: bool,
+    ) -> Option<Vec<u8>> {
+        if is_loopback {
+            return None;
+        }
+
+        if self.config.raw.admin_password.is_none() {
+            let html =
+                self.login_page("External access requires admin_password to be set in config.");
+            return Some(
+                HttpResponse::new(status::FORBIDDEN.0, status::FORBIDDEN.1)
+                    .content_type(content_type::HTML)
+                    .body_text(&html)
+                    .to_bytes(),
+            );
+        }
+
+        if path == route::LOGIN {
+            return None;
+        }
+
+        let session_token = helpers::extract_session_token(req);
+        let mut valid_session = false;
+        if let Some(token) = session_token {
+            let sessions = self.state.sessions.read().await;
+            if let Some(created) = sessions.get(token)
+                && created.elapsed() < SESSION_MAX_AGE
+            {
+                valid_session = true;
+            }
+        }
+
+        if !valid_session {
+            let mut sessions = self.state.sessions.write().await;
+            sessions.retain(|_, created| created.elapsed() < SESSION_MAX_AGE);
+        }
+
+        if valid_session {
+            None
+        } else {
+            Some(HttpResponse::redirect(route::LOGIN).to_bytes())
+        }
+    }
+
+    /// Handles GET and POST requests to the login route.
+    ///
+    /// Returns `None` if the path is not `/login` (caller continues to routing).
+    /// Returns `Some(Ok(bytes))` for GET (render form) or POST (validate credentials).
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - The HTTP method
+    /// * `path` - The request path
+    /// * `request` - The raw HTTP request string (needed for POST body extraction)
+    ///
+    /// # Returns
+    ///
+    /// `None` if path is not `/login`; `Some(Result)` with the login response otherwise.
+    async fn handle_login(
+        &self,
+        method: &str,
+        path: &str,
+        request: &str,
+    ) -> Option<Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>>> {
+        if path != route::LOGIN {
+            return None;
+        }
+
+        if method == method::GET {
+            let html = self.login_page("");
+            return Some(Ok(HttpResponse::ok()
+                .content_type(content_type::HTML)
+                .body_text(&html)
+                .to_bytes()));
+        }
+
+        if method == method::POST {
+            let body = match helpers::extract_body(request) {
+                Ok(b) => b,
+                Err(e) => return Some(Err(e)),
+            };
+            let params = helpers::parse_query(&body);
+            let password = params.get("password").cloned().unwrap_or_default();
+            let expected = self.config.raw.admin_password.as_deref().unwrap_or("");
+
+            if !expected.is_empty() && password == expected {
+                let token = Uuid::new_v4().to_string();
+                self.state
+                    .sessions
+                    .write()
+                    .await
+                    .insert(token.clone(), std::time::Instant::now());
+                return Some(Ok(HttpResponse::redirect(route::ROOT)
+                    .header(header_name::SET_COOKIE, &Self::session_set_cookie(&token))
+                    .to_bytes()));
+            } else {
+                let html = self.login_page("Invalid password.");
+                return Some(Ok(HttpResponse::new(
+                    status::FORBIDDEN.0,
+                    status::FORBIDDEN.1,
+                )
+                .content_type(content_type::HTML)
+                .body_text(&html)
+                .to_bytes()));
+            }
+        }
+
+        None
+    }
+
+    /// Routes an authenticated admin request to the appropriate handler.
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - The HTTP method
+    /// * `path` - The request path (without query string)
+    /// * `query` - The query string
+    /// * `request` - The raw HTTP request string (needed for POST body extraction)
+    /// * `session_cookie` - The session token, if present (used for logout invalidation)
+    ///
+    /// # Returns
+    ///
+    /// The constructed `HttpResponse` for the matched route, or 404 for unknown routes.
+    async fn route_admin_request(
+        &self,
+        method: &str,
+        path: &str,
+        query: &str,
+        request: &str,
+        session_cookie: Option<String>,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        match (method, path) {
+            (method::GET, route::ROOT) => self.web_interface().await,
+            (method::GET, route::ABOUT) => self.about_page().await,
+            (method::GET, route::API_BROWSE) => self.browse(query).await,
+            (method::GET, route::API_STATS) => self.stats().await,
+            (method::GET, route::API_TOKENS) => self.list_tokens().await,
+            (method::POST, route::API_GENERATE) => {
+                let body = helpers::extract_body(request)?;
+                self.generate_link(&body).await
+            }
+            (method::POST, route::API_TOKENS_BULK_DELETE) => {
+                let body = helpers::extract_body(request)?;
+                self.bulk_delete_tokens(&body).await
+            }
+            (method::DELETE, path) if path.starts_with(route::API_TOKENS_PREFIX) => {
+                let token = path.strip_prefix(route::API_TOKENS_PREFIX).unwrap_or("");
+                self.delete_token(token).await
+            }
+            (method::GET, route::LOGOUT) => {
+                if let Some(ref token) = session_cookie {
+                    self.state.sessions.write().await.remove(token);
+                    tracing::info!("Session invalidated on logout");
+                }
+                Ok(HttpResponse::redirect(route::LOGIN)
+                    .header(header_name::SET_COOKIE, &self.logout_cookie))
+            }
+            _ => Ok(HttpResponse::not_found()),
+        }
+    }
+
     /// Serves the main web interface HTML (pre-cached at startup).
     async fn web_interface(
         &self,
@@ -358,6 +495,9 @@ impl Handler {
     }
 
     /// Returns dashboard statistics as JSON.
+    ///
+    /// Aggregates token state (active/used/expired counts, total downloads)
+    /// and server uptime into a [`StatsResponse`].
     async fn stats(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let tokens = self.state.tokens.read().await;
         let now = std::time::Instant::now();
@@ -383,34 +523,16 @@ impl Handler {
 
         let uptime_seconds = self.state.started_at.elapsed().as_secs();
 
-        let stats = serde_json::json!({
-            "active_tokens": active,
-            "used_tokens": used,
-            "expired_tokens": expired,
-            "total_downloads": total_downloads,
-            "uptime_seconds": uptime_seconds,
-        });
+        let stats = StatsResponse {
+            active_tokens: active,
+            used_tokens: used,
+            expired_tokens: expired,
+            total_downloads,
+            uptime_seconds,
+        };
 
         HttpResponse::ok().body_json(&stats).map_err(Into::into)
     }
-
-    /// Configures one-time download enforcement.
-    async fn config_one_time(
-        &self,
-        enabled: bool,
-    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        self.state
-            .one_time_enabled
-            .store(enabled, Ordering::Relaxed);
-        Ok(HttpResponse::ok()
-            .content_type(content_type::PLAIN_TEXT)
-            .body_text("Configuration updated"))
-    }
-}
-
-// --- Utility methods ---
-
-impl Handler {
 
     /// Safely joins `relative` onto `base_path` and verifies the resolved path
     /// is still within `base_path` after canonicalization.
@@ -441,92 +563,38 @@ impl Handler {
             Some(canonical)
         } else {
             tracing::warn!(
-                "Path escape blocked: '{}' resolves to '{:?}' outside base '{:?}'",
-                relative,
-                canonical,
-                self.state.base_path
+                "Path escape blocked: '{relative}' resolves to '{canonical:?}' outside base '{base:?}'",
+                base = self.state.base_path
             );
             None
         }
     }
 
-    /// Parses URL query string into key-value pairs.
-    pub(crate) fn parse_query(&self, query: &str) -> HashMap<String, String> {
-        let mut params = HashMap::new();
-        for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                params.insert(self.url_decode(key), self.url_decode(value));
-            }
-        }
-        params
-    }
-
-    /// URL-decodes a string (handles %XX encoding and + for spaces).
-    pub(crate) fn url_decode(&self, input: &str) -> String {
-        let mut result = String::new();
-        let mut chars = input.chars();
-
-        while let Some(ch) = chars.next() {
-            match ch {
-                '%' => {
-                    let hex: String = chars.by_ref().take(2).collect();
-                    if hex.len() == 2 {
-                        if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                            result.push(byte as char);
-                        } else {
-                            result.push('%');
-                            result.push_str(&hex);
-                        }
-                    } else {
-                        result.push('%');
-                        result.push_str(&hex);
-                    }
-                }
-                '+' => result.push(' '),
-                _ => result.push(ch),
-            }
-        }
-
-        result
-    }
-
-    /// URL-encodes a string for safe use in URLs.
-    pub(crate) fn url_encode(&self, input: &str) -> String {
-        let mut result = String::with_capacity(input.len());
-        for byte in input.bytes() {
-            match byte {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    result.push(byte as char);
-                }
-                b' ' => result.push('+'),
-                _ => {
-                    write!(result, "%{byte:02X}").unwrap();
-                }
-            }
-        }
-        result
-    }
-
-    /// Renders the login page with an optional message (CSS pre-cached at startup).
+    /// Renders the login page with an optional message.
+    ///
+    /// Substitutes `{{MESSAGE}}` in the pre-cached login HTML template.
+    /// CSS is already injected at startup.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Message to display (e.g. error text); use `""` for none
+    ///
+    /// # Returns
+    ///
+    /// The fully rendered login page HTML.
     fn login_page(&self, message: &str) -> String {
         self.login_html_base.replace("{{MESSAGE}}", message)
     }
 
-    /// Extracts the session token from the `Cookie` header.
-    fn extract_session_token<'a>(req: &'a httparse::Request<'_, '_>) -> Option<&'a str> {
-        const PREFIX: &str = concat!("otd_session", "=");
-        req.headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("Cookie"))
-            .and_then(|h| std::str::from_utf8(h.value).ok())
-            .unwrap_or("")
-            .split(';')
-            .map(|s| s.trim())
-            .find(|s| s.starts_with(PREFIX))
-            .and_then(|s| s.strip_prefix(PREFIX))
-    }
-
     /// Builds a `Set-Cookie` header value for a new session.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The session token to set
+    ///
+    /// # Returns
+    ///
+    /// A `Set-Cookie` header value with `HttpOnly`, `SameSite=Strict`, and `Max-Age`.
     fn session_set_cookie(token: &str) -> String {
         format!(
             "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
@@ -534,7 +602,15 @@ impl Handler {
         )
     }
 
-    /// Splits a URL path into (path, query) components.
+    /// Splits a URL path into `(path, query)` components at the first `?`.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The full request path (may include query string)
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(path, query)` where `query` is `""` if no `?` is present.
     fn split_path_query(path: &str) -> (&str, &str) {
         if let Some(pos) = path.find('?') {
             (&path[..pos], &path[pos + 1..])
@@ -543,29 +619,28 @@ impl Handler {
         }
     }
 
-    /// Builds a download URL from a name and token.
+    /// Builds a full download URL from a display name and token.
+    ///
+    /// URL-encodes the name and appends the token as a `k` query parameter.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The display name for the download (will be URL-encoded)
+    /// * `token` - The unique download token
+    ///
+    /// # Returns
+    ///
+    /// The complete download URL.
     pub(crate) fn download_url(&self, name: &str, token: &str) -> String {
         format!(
             "{}/{}?k={}",
             self.config.download_base_url,
-            self.url_encode(name),
+            helpers::url_encode(name),
             token
         )
     }
-
-    /// Extracts the body content from an HTTP request.
-    pub(crate) fn extract_body(
-        &self,
-        request: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(body_start) = request.find(HEADER_BODY_SEPARATOR) {
-            Ok(request[body_start + HEADER_BODY_SEPARATOR.len()..].to_string())
-        } else {
-            Ok(String::new())
-        }
-    }
 }
-
+/// [`Handler`] implementation of [`Clone`]
 impl Clone for Handler {
     fn clone(&self) -> Self {
         Self {
@@ -579,41 +654,224 @@ impl Clone for Handler {
     }
 }
 
+#[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+/// Helper functions, mainly for URL and request handling, used
+/// by [`Handler`]
+mod helpers {
+    use super::*;
+
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// Extracts the session token from the `Cookie` header.
+    ///
+    /// Searches for the `otd_session=<value>` cookie among all cookies
+    /// in the request.
+    ///
+    /// # Arguments
+    ///
+    /// * `req` - The parsed HTTP request
+    ///
+    /// # Returns
+    ///
+    /// The session token value, or `None` if not present.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use otd::handlers::helpers::extract_session_token;
+    /// let req = httparse::Request::new(&mut []);
+    /// let token = extract_session_token(&req);
+    /// ```
+    pub(crate) fn extract_session_token<'a>(req: &'a httparse::Request<'_, '_>) -> Option<&'a str> {
+        const PREFIX: &str = concat!("otd_session", "=");
+        req.headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case(header_name::COOKIE))
+            .and_then(|h| std::str::from_utf8(h.value).ok())
+            .unwrap_or("")
+            .split(';')
+            .map(|s| s.trim())
+            .find(|s| s.starts_with(PREFIX))
+            .and_then(|s| s.strip_prefix(PREFIX))
+    }
+
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// Parses a URL query string into key-value pairs.
+    ///
+    /// Splits on `&` and `=`, URL-decoding both keys and values.
+    /// Pairs without `=` are silently skipped.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The raw query string (without leading `?`)
+    ///
+    /// # Returns
+    ///
+    /// A map of decoded key-value pairs.
+    pub(crate) fn parse_query(query: &str) -> HashMap<String, String> {
+        let mut params = HashMap::new();
+        for pair in query.split('&') {
+            if let Some((key, value)) = pair.split_once('=') {
+                params.insert(url_decode(key), url_decode(value));
+            }
+        }
+        params
+    }
+
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// Extracts the body content from a raw HTTP request string.
+    ///
+    /// Finds the `\r\n\r\n` header-body separator and returns everything after it.
+    /// Returns an empty string if no separator is found.
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The full raw HTTP request
+    ///
+    /// # Returns
+    ///
+    /// The request body as a string.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use otd::handlers::helpers::extract_body;
+    /// let body = extract_body("POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello");
+    /// assert_eq!(body.unwrap(), "Hello");
+    /// ```
+    pub(crate) fn extract_body(
+        request: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(body_start) = request.find(super::HEADER_BODY_SEPARATOR) {
+            Ok(request[body_start + super::HEADER_BODY_SEPARATOR.len()..].to_string())
+        } else {
+            Ok(String::new())
+        }
+    }
+
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// URL-encodes a string for safe use in URLs, using `application/x-www-form-urlencoded`
+    /// standard (spaces are replaced with `+`)
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The string to encode
+    ///
+    /// # Returns
+    ///
+    /// The URL-encoded string
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use otd::handlers::helpers::url_encode;
+    /// let encoded = url_encode("Hello, World!");
+    /// assert_eq!(encoded, "Hello%2C+World%21");
+    /// ```
+    pub(crate) fn url_encode(input: &str) -> String {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        input
+            .bytes()
+            .fold(String::with_capacity(input.len()), |mut acc, b| {
+                match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                        acc.push(b as char);
+                    }
+                    b' ' => acc.push('+'),
+                    _ => {
+                        acc.push('%');
+                        acc.push(HEX[(b >> 4) as usize] as char);
+                        acc.push(HEX[(b & 0x0F) as usize] as char);
+                    }
+                }
+                acc
+            })
+    }
+
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    /// URL-decodes a percent-encoded string.
+    ///
+    /// Handles `%XX` hex sequences and `+` as space, per
+    /// `application/x-www-form-urlencoded`. Malformed `%` sequences are
+    /// passed through literally.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The percent-encoded string
+    ///
+    /// # Returns
+    ///
+    /// The decoded string.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use otd::handlers::helpers::url_decode;
+    /// let decoded = url_decode("Hello%2C+World%21");
+    /// assert_eq!(decoded, "Hello, World!");
+    /// ```
+    pub(crate) fn url_decode(input: &str) -> String {
+        let mut result = String::with_capacity(input.len());
+        let mut bytes = input.bytes();
+        while let Some(b) = bytes.next() {
+            match b {
+                b'%' => match (bytes.next(), bytes.next()) {
+                    (Some(hi), Some(lo)) => match (unhex(hi), unhex(lo)) {
+                        (Some(h), Some(l)) => result.push((h << 4 | l) as char),
+                        _ => {
+                            result.push('%');
+                            result.push(hi as char);
+                            result.push(lo as char);
+                        }
+                    },
+                    (Some(hi), None) => {
+                        result.push('%');
+                        result.push(hi as char);
+                    }
+                    _ => result.push('%'),
+                },
+                b'+' => result.push(' '),
+                _ => result.push(b as char),
+            }
+        }
+        result
+    }
+
+    /// A utility function to convert a hexadecimal character to a byte
+    ///
+    /// This is only used by [`url_decode`]
+    const fn unhex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Config;
     use std::path::PathBuf;
 
-    fn make_test_handler() -> Handler {
-        let config = Config::default().parse().unwrap();
-        let state = Arc::new(AppState::new(PathBuf::from("/test")));
-        Handler::new(state, config)
-    }
-
     #[test]
     fn test_url_encoding() {
-        let handler = make_test_handler();
-
-        assert_eq!(handler.url_encode("hello world"), "hello+world");
-        assert_eq!(handler.url_encode("file.txt"), "file.txt");
-        assert_eq!(handler.url_encode("special@chars"), "special%40chars");
+        assert_eq!(helpers::url_encode("hello world"), "hello+world");
+        assert_eq!(helpers::url_encode("file.txt"), "file.txt");
+        assert_eq!(helpers::url_encode("special@chars"), "special%40chars");
     }
 
     #[test]
     fn test_url_decoding() {
-        let handler = make_test_handler();
-
-        assert_eq!(handler.url_decode("hello+world"), "hello world");
-        assert_eq!(handler.url_decode("file.txt"), "file.txt");
-        assert_eq!(handler.url_decode("special%40chars"), "special@chars");
+        assert_eq!(helpers::url_decode("hello+world"), "hello world");
+        assert_eq!(helpers::url_decode("file.txt"), "file.txt");
+        assert_eq!(helpers::url_decode("special%40chars"), "special@chars");
     }
 
     #[test]
     fn test_query_parsing() {
-        let handler = make_test_handler();
-
-        let params = handler.parse_query("k=token123&path=folder%2Ffile");
+        let params = helpers::parse_query("k=token123&path=folder%2Ffile");
         assert_eq!(params.get("k"), Some(&"token123".to_string()));
         assert_eq!(params.get("path"), Some(&"folder/file".to_string()));
     }

@@ -1,10 +1,10 @@
 //! Download link generation and token management.
 //!
 //! Author: aav
-use crate::{http::*, types::*};
 use super::download::{DEFAULT_ARCHIVE_NAME, DEFAULT_DIR_NAME, DEFAULT_DOWNLOAD_NAME};
+use crate::{http::*, types::*};
 
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{Arc, atomic::Ordering};
 use uuid::Uuid;
 
 /// Link management methods for [`super::Handler`].
@@ -71,9 +71,9 @@ impl super::Handler {
             .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
 
         let zip_state = if is_multi_file {
-            std::sync::RwLock::new(ZipState::Preparing)
+            smol::lock::RwLock::new(ZipState::Preparing)
         } else {
-            std::sync::RwLock::new(ZipState::NotNeeded)
+            smol::lock::RwLock::new(ZipState::NotNeeded)
         };
 
         let item = DownloadItem {
@@ -101,7 +101,7 @@ impl super::Handler {
 
         // Create URL with filename for better wget/browser behavior
         let download_url = self.download_url(&name, &token);
-        tracing::info!("Generated download link for '{}': {}", name, token);
+        tracing::info!("Generated download link for '{name}': {token}");
 
         let response = GenerateResponse {
             token,
@@ -131,7 +131,7 @@ impl super::Handler {
                 }
             });
             let zip_status = {
-                let zs = item.zip_state.read().unwrap();
+                let zs = item.zip_state.read().await;
                 match &*zs {
                     ZipState::NotNeeded => "not_needed",
                     ZipState::Preparing => "preparing",
@@ -139,19 +139,19 @@ impl super::Handler {
                     ZipState::Failed(_) => "failed",
                 }
             };
-            items.push(serde_json::json!({
-                "token": token,
-                "name": item.name,
-                "is_multi_file": item.is_multi_file,
-                "download_count": count,
-                "max_downloads": item.max_downloads,
-                "remaining_downloads": item.max_downloads.saturating_sub(count),
-                "expired": expired,
-                "expires_in_seconds": expires_in_seconds,
-                "download_url": download_url,
-                "paths": item.paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
-                "zip_status": zip_status
-            }));
+            items.push(TokenListItem {
+                token: token.clone(),
+                name: item.name.clone(),
+                is_multi_file: item.is_multi_file,
+                download_count: count,
+                max_downloads: item.max_downloads,
+                remaining_downloads: item.max_downloads.saturating_sub(count),
+                expired,
+                expires_in_seconds,
+                download_url,
+                paths: item.paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+                zip_status: zip_status.to_string(),
+            });
         }
 
         HttpResponse::ok().body_json(&items).map_err(Into::into)
@@ -185,14 +185,11 @@ impl super::Handler {
         });
 
         let removed = before - tokens.len();
-        tracing::info!(
-            "Bulk delete (filter={}): removed {} tokens",
-            req.filter,
-            removed
-        );
+        let filter = &req.filter;
+        tracing::info!("Bulk delete (filter={filter}): removed {removed} tokens");
 
         HttpResponse::ok()
-            .body_json(&serde_json::json!({ "removed": removed }))
+            .body_json(&BulkDeleteResponse { removed })
             .map_err(Into::into)
     }
 
@@ -203,12 +200,14 @@ impl super::Handler {
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let mut tokens = self.state.tokens.write().await;
         if tokens.remove(token).is_some() {
-            tracing::info!("Deleted token: {}", token);
-            Ok(HttpResponse::ok()
-                .content_type(content_type::JSON)
-                .body_text("{\"removed\":true}"))
+            tracing::info!("Deleted token: {token}");
+            HttpResponse::ok()
+                .body_json(&BulkDeleteResponse { removed: 1 })
+                .map_err(Into::into)
         } else {
-            Ok(HttpResponse::not_found().body_text("{\"removed\":false}"))
+            HttpResponse::ok()
+                .body_json(&BulkDeleteResponse { removed: 0 })
+                .map_err(Into::into)
         }
     }
 }
