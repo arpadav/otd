@@ -19,7 +19,7 @@ set -euo pipefail
 # --------------------------------------------------
 # file extensions to search for
 # --------------------------------------------------
-FILE_EXTENSIONS=("rs" "sh")
+FILE_EXTENSIONS=("rs" "sh" "html")
 name_expr=()
 for ext in "${FILE_EXTENSIONS[@]}"; do
     if [ ${#name_expr[@]} -gt 0 ]; then

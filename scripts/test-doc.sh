@@ -33,7 +33,7 @@ done
 # return
 # --------------------------------------------------
 if [ "$JSON_OUTPUT" = true ]; then
-    cargo +nightly test --doc --workspace -- -Z unstable-options --report-time --format json
+    cargo +nightly test --doc --workspace --features "doc-tests" -- -Z unstable-options --report-time --format json
 else
-    cargo test --doc --workspace
+    cargo test --doc --workspace --features "doc-tests"
 fi
