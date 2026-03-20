@@ -11,16 +11,21 @@ use serde::{Deserialize, Serialize};
 use smol::lock::RwLock;
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicU32};
 
+/// State file name within the data directory.
+const STATE_FILE: &str = "state.json";
+/// Current persistence format version.
+const STATE_VERSION: u32 = 1;
+
 #[derive(Debug)]
-/// Tracks the lifecycle of a zip archive for a download item.
-pub enum ZipState {
-    /// Single-file download - no zip needed
+/// Tracks the lifecycle of an archive for a download item.
+pub enum ArchiveState {
+    /// Single-file download - no archive needed
     NotNeeded,
-    /// Zip is being created in the background
+    /// Archive is being created in the background
     Preparing,
-    /// Zip is ready and cached at the given path
+    /// Archive is ready and cached at the given path
     Ready(PathBuf),
-    /// Zip creation failed
+    /// Archive creation failed
     Failed(String),
 }
 
@@ -45,8 +50,10 @@ pub struct DownloadItem {
     pub expires_at: Option<std::time::Instant>,
     /// When this download item was created
     pub created_at: std::time::Instant,
-    /// Zip preparation state (interior-mutable; never held across .await)
-    pub zip_state: smol::lock::RwLock<ZipState>,
+    /// Compression format for archive downloads.
+    pub compression: crate::handlers::download::CompressionType,
+    /// Archive preparation state (interior-mutable; never held across .await)
+    pub archive_state: smol::lock::RwLock<ArchiveState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +90,7 @@ pub struct DownloadQuery {
 ///     name: Some("my-download.zip".to_string()),
 ///     max_downloads: Some(5),
 ///     expires_in_seconds: Some(3600),
+///     format: Default::default(),
 /// };
 ///
 /// assert_eq!(request.paths.len(), 2);
@@ -92,6 +100,10 @@ pub struct GenerateRequest {
     pub name: Option<String>,
     pub max_downloads: Option<u32>,
     pub expires_in_seconds: Option<u64>,
+
+    #[serde(default)]
+    /// Archive format (defaults to zip when absent).
+    pub format: crate::handlers::download::CompressionType,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,8 +224,8 @@ pub struct TokenListItem {
     pub download_url: String,
     /// List of file/folder paths included in this download
     pub paths: Vec<String>,
-    /// Current zip preparation status
-    pub zip_status: String,
+    /// Current archive preparation status
+    pub archive_status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,6 +233,83 @@ pub struct TokenListItem {
 pub struct BulkDeleteResponse {
     /// Number of tokens removed
     pub removed: usize,
+}
+
+/// Serializable snapshot of all tokens for persistence across restarts.
+#[derive(Serialize, Deserialize)]
+pub struct PersistedState {
+    /// Format version for forward compatibility.
+    pub version: u32,
+    /// Unix timestamp when the state was saved.
+    pub saved_at: u64,
+    /// All active download tokens.
+    pub tokens: HashMap<String, PersistedDownloadItem>,
+}
+
+/// Serializable representation of a single download token.
+#[derive(Serialize, Deserialize)]
+pub struct PersistedDownloadItem {
+    pub paths: Vec<PathBuf>,
+    pub is_multi_file: bool,
+    pub name: String,
+    pub max_downloads: u32,
+    pub download_count: u32,
+    pub expires_in_seconds: Option<u64>,
+    pub created_ago_seconds: u64,
+    pub compression: crate::handlers::download::CompressionType,
+}
+
+impl PersistedDownloadItem {
+    /// Converts a live [`DownloadItem`] into its serializable form.
+    pub fn from_download_item(item: &DownloadItem, now: std::time::Instant) -> Self {
+        let count = item
+            .download_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let expires_in_seconds = item.expires_at.and_then(|e| {
+            if now < e {
+                Some(e.duration_since(now).as_secs())
+            } else {
+                None
+            }
+        });
+        let created_ago_seconds = now.duration_since(item.created_at).as_secs();
+        Self {
+            paths: item.paths.clone(),
+            is_multi_file: item.is_multi_file,
+            name: item.name.clone(),
+            max_downloads: item.max_downloads,
+            download_count: count,
+            expires_in_seconds,
+            created_ago_seconds,
+            compression: item.compression,
+        }
+    }
+
+    /// Converts back into a live [`DownloadItem`].
+    pub fn into_download_item(self) -> DownloadItem {
+        let now = std::time::Instant::now();
+        let expires_at = self
+            .expires_in_seconds
+            .map(|secs| now + std::time::Duration::from_secs(secs));
+        let created_at = now - std::time::Duration::from_secs(self.created_ago_seconds);
+        let archive_state = if self.is_multi_file {
+            // Will be updated after checking cache or re-creating
+            RwLock::new(ArchiveState::Preparing)
+        } else {
+            RwLock::new(ArchiveState::NotNeeded)
+        };
+        DownloadItem {
+            paths: self.paths,
+            is_multi_file: self.is_multi_file,
+            name: self.name,
+            max_downloads: self.max_downloads,
+            download_count: AtomicU32::new(self.download_count),
+            expires_at,
+            created_at,
+            compression: self.compression,
+            archive_state,
+        }
+    }
 }
 
 /// Shared application state containing configuration and active downloads.
@@ -232,44 +321,111 @@ pub struct BulkDeleteResponse {
 ///
 /// ```rust
 /// use otd::types::AppState;
-/// use std::path::PathBuf;
 ///
-/// let state = AppState::new(PathBuf::from("/home/user/files"));
+/// let state = AppState::new();
 /// ```
 pub struct AppState {
     /// Map of active download tokens to their corresponding items
     pub tokens: RwLock<HashMap<String, DownloadItem>>,
-    /// Base directory path for file serving
-    pub base_path: PathBuf,
     /// Active login sessions: token → creation time
     pub sessions: RwLock<HashMap<String, std::time::Instant>>,
     /// Server start time for uptime tracking
     pub started_at: std::time::Instant,
+    /// Set when tokens change; cleared after state is persisted.
+    pub dirty: std::sync::atomic::AtomicBool,
+}
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 /// [`AppState`] implementation
 impl AppState {
-    /// Creates a new application state with the specified base path.
-    ///
-    /// # Arguments
-    ///
-    /// * `base_path` - Root directory for file serving and browsing
+    /// Creates a new application state.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use otd::types::AppState;
-    /// use std::path::PathBuf;
     ///
-    /// let state = AppState::new(PathBuf::from("/var/files"));
-    /// assert_eq!(state.base_path, PathBuf::from("/var/files"));
+    /// let state = AppState::new();
     /// ```
-    pub fn new(base_path: PathBuf) -> Self {
+    pub fn new() -> Self {
         Self {
             tokens: RwLock::new(HashMap::new()),
-            base_path,
             sessions: RwLock::new(HashMap::new()),
             started_at: std::time::Instant::now(),
+            dirty: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Creates an `AppState` pre-loaded with persisted tokens.
+    pub fn with_tokens(tokens: HashMap<String, DownloadItem>) -> Self {
+        Self {
+            tokens: RwLock::new(tokens),
+            sessions: RwLock::new(HashMap::new()),
+            started_at: std::time::Instant::now(),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Marks the state as dirty so it will be persisted on the next save cycle.
+    pub fn mark_dirty(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Saves the current token state to disk (atomic write).
+    pub async fn save_state(
+        &self,
+        dir: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let now = std::time::Instant::now();
+        let tokens = self.tokens.read().await;
+        let persisted_tokens: HashMap<String, PersistedDownloadItem> = tokens
+            .iter()
+            .map(|(k, v)| (k.clone(), PersistedDownloadItem::from_download_item(v, now)))
+            .collect();
+        drop(tokens);
+
+        let state = PersistedState {
+            version: STATE_VERSION,
+            saved_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            tokens: persisted_tokens,
+        };
+
+        let json = serde_json::to_string_pretty(&state)?;
+        let path = dir.join(STATE_FILE);
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// Loads persisted state from disk, returning the token map.
+    ///
+    /// Skips tokens that have already expired.
+    pub fn load_state(
+        dir: &std::path::Path,
+    ) -> Result<HashMap<String, DownloadItem>, Box<dyn std::error::Error + Send + Sync>> {
+        let path = dir.join(STATE_FILE);
+        let json = std::fs::read_to_string(&path)?;
+        let state: PersistedState = serde_json::from_str(&json)?;
+        let mut tokens = HashMap::new();
+        for (key, persisted) in state.tokens {
+            // Skip already-expired tokens
+            if persisted.expires_in_seconds == Some(0) {
+                continue;
+            }
+            // Skip fully-used tokens
+            if persisted.download_count >= persisted.max_downloads {
+                continue;
+            }
+            tokens.insert(key, persisted.into_download_item());
+        }
+        Ok(tokens)
     }
 }
 
@@ -280,10 +436,7 @@ mod tests {
 
     #[test]
     fn test_app_state_creation() {
-        let base_path = PathBuf::from("/test/path");
-        let state = AppState::new(base_path.clone());
-
-        assert_eq!(state.base_path, base_path);
+        let _state = AppState::new();
     }
 
     #[test]
@@ -296,7 +449,8 @@ mod tests {
             download_count: AtomicU32::new(0),
             expires_at: None,
             created_at: std::time::Instant::now(),
-            zip_state: smol::lock::RwLock::new(ZipState::NotNeeded),
+            compression: crate::handlers::download::CompressionType::Zip,
+            archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
         };
 
         assert_eq!(item.paths.len(), 1);
@@ -304,6 +458,125 @@ mod tests {
         assert_eq!(item.download_count.load(Ordering::Relaxed), 0);
         assert_eq!(item.name, "test.txt");
         assert_eq!(item.max_downloads, 3);
+    }
+
+    #[test]
+    fn test_persisted_roundtrip() {
+        let item = DownloadItem {
+            paths: vec![PathBuf::from("/tmp/file.txt")],
+            is_multi_file: false,
+            name: "file.txt".to_string(),
+            max_downloads: 5,
+            download_count: AtomicU32::new(2),
+            expires_at: Some(std::time::Instant::now() + std::time::Duration::from_secs(600)),
+            created_at: std::time::Instant::now() - std::time::Duration::from_secs(30),
+            compression: crate::handlers::download::CompressionType::TarGz,
+            archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+        };
+
+        let now = std::time::Instant::now();
+        let persisted = PersistedDownloadItem::from_download_item(&item, now);
+        assert_eq!(persisted.download_count, 2);
+        assert_eq!(persisted.max_downloads, 5);
+        assert!(persisted.expires_in_seconds.is_some());
+        assert!(persisted.created_ago_seconds >= 29);
+
+        let restored = persisted.into_download_item();
+        assert_eq!(restored.name, "file.txt");
+        assert_eq!(restored.max_downloads, 5);
+        assert_eq!(restored.download_count.load(Ordering::Relaxed), 2);
+        assert!(restored.expires_at.is_some());
+    }
+
+    #[test]
+    fn test_save_load_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+
+        // Insert a token
+        smol::block_on(async {
+            let mut tokens = state.tokens.write().await;
+            tokens.insert(
+                "test-token".to_string(),
+                DownloadItem {
+                    paths: vec![PathBuf::from("/tmp/a.txt")],
+                    is_multi_file: false,
+                    name: "a.txt".to_string(),
+                    max_downloads: 3,
+                    download_count: AtomicU32::new(1),
+                    expires_at: Some(
+                        std::time::Instant::now() + std::time::Duration::from_secs(300),
+                    ),
+                    created_at: std::time::Instant::now(),
+                    compression: crate::handlers::download::CompressionType::Zip,
+                    archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                },
+            );
+        });
+
+        // Save
+        smol::block_on(state.save_state(dir.path())).unwrap();
+
+        // Load
+        let loaded = AppState::load_state(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        let item = loaded.get("test-token").unwrap();
+        assert_eq!(item.name, "a.txt");
+        assert_eq!(item.download_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_load_state_skips_used_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new();
+
+        smol::block_on(async {
+            let mut tokens = state.tokens.write().await;
+            // Fully used token
+            tokens.insert(
+                "used-token".to_string(),
+                DownloadItem {
+                    paths: vec![PathBuf::from("/tmp/b.txt")],
+                    is_multi_file: false,
+                    name: "b.txt".to_string(),
+                    max_downloads: 1,
+                    download_count: AtomicU32::new(1),
+                    expires_at: None,
+                    created_at: std::time::Instant::now(),
+                    compression: crate::handlers::download::CompressionType::Zip,
+                    archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                },
+            );
+            // Active token
+            tokens.insert(
+                "active-token".to_string(),
+                DownloadItem {
+                    paths: vec![PathBuf::from("/tmp/c.txt")],
+                    is_multi_file: false,
+                    name: "c.txt".to_string(),
+                    max_downloads: 5,
+                    download_count: AtomicU32::new(0),
+                    expires_at: None,
+                    created_at: std::time::Instant::now(),
+                    compression: crate::handlers::download::CompressionType::Zip,
+                    archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                },
+            );
+        });
+
+        smol::block_on(state.save_state(dir.path())).unwrap();
+        let loaded = AppState::load_state(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("active-token"));
+        assert!(!loaded.contains_key("used-token"));
+    }
+
+    #[test]
+    fn test_dirty_flag() {
+        let state = AppState::new();
+        assert!(!state.dirty.load(Ordering::Relaxed));
+        state.mark_dirty();
+        assert!(state.dirty.load(Ordering::Relaxed));
     }
 
     #[test]

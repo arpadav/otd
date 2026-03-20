@@ -218,8 +218,8 @@ impl HttpResponse {
     /// Serializes the status line, headers, and a computed `Content-Length`
     /// into the wire format prefix (everything before the body).
     ///
-    /// `Content-Length` is always derived from `self.body.len()` here — it is
-    /// never stored as a builder header — so duplicates are structurally impossible.
+    /// `Content-Length` is always derived from `self.body.len()` here - it is
+    /// never stored as a builder header - so duplicates are structurally impossible.
     ///
     /// # Returns
     ///
@@ -351,6 +351,12 @@ pub mod content_type {
     pub const ZIP: &str = "application/zip";
     /// Plain text
     pub const PLAIN_TEXT: &str = "text/plain";
+    /// SVG image
+    pub const SVG: &str = "image/svg+xml";
+    /// Gzip-compressed tar archive
+    pub const GZIP: &str = "application/gzip";
+    /// Tar archive
+    pub const TAR: &str = "application/x-tar";
 }
 /// [`HttpResponse`] implementation
 impl HttpResponse {

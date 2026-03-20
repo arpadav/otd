@@ -29,8 +29,6 @@ pub(crate) const ARCHIVE_CACHE_DIR: &str = "/tmp/otd-cache";
 pub(crate) const DEFAULT_DIR_NAME: &str = "folder";
 /// Default filename when a path has no filename component.
 pub(crate) const DEFAULT_FILE_NAME: &str = "file";
-/// Default archive name when multiple files are selected without a custom name.
-pub(crate) const DEFAULT_ARCHIVE_NAME: &str = "output.zip";
 /// Default download name fallback for single items.
 pub(crate) const DEFAULT_DOWNLOAD_NAME: &str = "download";
 /// Unix permissions applied to entries inside archives.
@@ -40,13 +38,17 @@ const ARCHIVE_UNIX_PERMISSIONS: u32 = 0o755;
 type EntryState = Option<(String, u64)>;
 
 /// Supported archive/compression formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompressionType {
     /// Standard ZIP archive (deflate).
+    #[default]
     Zip,
-    // Future variants:
-    // TarGz,
-    // Tar,
+    /// Gzip-compressed tar archive.
+    #[serde(alias = "targz", alias = "tgz")]
+    TarGz,
+    /// Uncompressed tar archive.
+    Tar,
 }
 /// [`CompressionType`] implementation
 impl CompressionType {
@@ -54,6 +56,8 @@ impl CompressionType {
     pub fn extension(&self) -> &'static str {
         match self {
             Self::Zip => ".zip",
+            Self::TarGz => ".tar.gz",
+            Self::Tar => ".tar",
         }
     }
 
@@ -61,21 +65,70 @@ impl CompressionType {
     pub fn content_type(&self) -> &'static str {
         match self {
             Self::Zip => content_type::ZIP,
+            Self::TarGz => content_type::GZIP,
+            Self::Tar => content_type::TAR,
         }
+    }
+}
+/// Tar archive operations shared by both compressed and uncompressed variants.
+struct TarWriter<W: Write>(tar::Builder<W>);
+/// [`TarWriter`] implementation
+impl<W: Write> TarWriter<W> {
+    fn add_file(
+        &mut self,
+        archive_path: &str,
+        contents: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(ARCHIVE_UNIX_PERMISSIONS);
+        header.set_cksum();
+        self.0.append_data(&mut header, archive_path, contents)?;
+        Ok(())
+    }
+
+    fn add_directory(
+        &mut self,
+        archive_path: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(0);
+        header.set_mode(ARCHIVE_UNIX_PERMISSIONS);
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_cksum();
+        let dir_path = if archive_path.ends_with('/') {
+            std::borrow::Cow::Borrowed(archive_path)
+        } else {
+            std::borrow::Cow::Owned(format!("{archive_path}/"))
+        };
+        self.0
+            .append_data(&mut header, dir_path.as_ref(), &[][..])?;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<W, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.0.into_inner()?)
     }
 }
 
 /// Wraps a format-specific archive writer so callers don't need to know
 /// which compression backend is in use.
 enum ArchiveWriter<W: Write + std::io::Seek> {
-    Zip(zip::ZipWriter<W>),
+    Zip(Box<zip::ZipWriter<W>>),
+    TarGz(Box<TarWriter<flate2::write::GzEncoder<W>>>),
+    Tar(Box<TarWriter<W>>),
 }
 /// [`ArchiveWriter`] implementation
 impl<W: Write + std::io::Seek> ArchiveWriter<W> {
     /// Creates a new archive writer for the given compression type.
     fn new(compression: CompressionType, dest: W) -> Self {
         match compression {
-            CompressionType::Zip => Self::Zip(zip::ZipWriter::new(dest)),
+            CompressionType::Zip => Self::Zip(Box::new(zip::ZipWriter::new(dest))),
+            CompressionType::TarGz => {
+                let encoder = flate2::write::GzEncoder::new(dest, flate2::Compression::default());
+                Self::TarGz(Box::new(TarWriter(tar::Builder::new(encoder))))
+            }
+            CompressionType::Tar => Self::Tar(Box::new(TarWriter(tar::Builder::new(dest)))),
         }
     }
 
@@ -93,6 +146,8 @@ impl<W: Write + std::io::Seek> ArchiveWriter<W> {
                 zip.start_file(archive_path, options)?;
                 zip.write_all(contents)?;
             }
+            Self::TarGz(tar) => tar.add_file(archive_path, contents)?,
+            Self::Tar(tar) => tar.add_file(archive_path, contents)?,
         }
         Ok(())
     }
@@ -109,6 +164,8 @@ impl<W: Write + std::io::Seek> ArchiveWriter<W> {
                     .unix_permissions(ARCHIVE_UNIX_PERMISSIONS);
                 zip.add_directory(archive_path, options)?;
             }
+            Self::TarGz(tar) => tar.add_directory(archive_path)?,
+            Self::Tar(tar) => tar.add_directory(archive_path)?,
         }
         Ok(())
     }
@@ -118,6 +175,12 @@ impl<W: Write + std::io::Seek> ArchiveWriter<W> {
         match self {
             Self::Zip(zip) => {
                 zip.finish()?;
+            }
+            Self::TarGz(tar) => {
+                tar.finish()?.finish()?;
+            }
+            Self::Tar(tar) => {
+                tar.finish()?;
             }
         }
         Ok(())
@@ -305,48 +368,26 @@ fn compute_cache_key(paths: &[PathBuf]) -> std::io::Result<String> {
                 .iter()
                 .flat_map(|path| {
                     if path.is_dir() {
-                        jwalk::WalkDirGeneric::<((), EntryState)>::new(path)
-                            .process_read_dir(|_depth, _path, _state, children| {
-                                children.iter_mut().for_each(|entry| {
-                                    if let Ok(entry) = entry && entry.file_type.is_file() {
-                                        entry.client_state = fetch_entry_metadata(&entry.path()).ok();
-                                    }
-                                });
-                            })
-                            .into_iter()
-                            .filter_map(|e| e.ok())
-                            .filter_map(|e| e.client_state)
-                            .collect::<Vec<_>>()
-                    } else {
-                        fetch_entry_metadata(path).into_iter().collect()
-                    }
-                })
-                .collect();
-        } else if #[cfg(feature = "rayon")] {
-            use rayon::prelude::*;
-            let file_paths: Vec<PathBuf> = paths
-                .iter()
-                .flat_map(|path| {
-                    if path.is_dir() {
                         itertools::Either::Left(
-                            walkdir::WalkDir::new(path)
+                            jwalk::WalkDirGeneric::<((), EntryState)>::new(path)
+                                .process_read_dir(|_depth, _path, _state, children| {
+                                    children.iter_mut().for_each(|entry| {
+                                        if let Ok(entry) = entry
+                                            && entry.file_type.is_file()
+                                        {
+                                            entry.client_state = fetch_entry_metadata(&entry.path()).ok();
+                                        }
+                                    });
+                                })
                                 .into_iter()
                                 .filter_map(|e| e.ok())
-                                .filter(|e| e.file_type().is_file())
-                                .map(|e| e.into_path()),
+                                .filter_map(|e| e.client_state),
                         )
                     } else {
-                        itertools::Either::Right(std::iter::once(path.clone()))
+                        itertools::Either::Right(fetch_entry_metadata(path).into_iter())
                     }
                 })
                 .collect();
-            // --------------------------------------------------
-            // parallel fetch metadata
-            // --------------------------------------------------
-            let entries: BTreeSet<(String, u64)> = file_paths
-                .par_iter()
-                .filter_map(|path| fetch_entry_metadata(path).ok())
-                .collect::<BTreeSet<_>>();
         } else {
             // --------------------------------------------------
             // seq walk and fetch metadata
@@ -438,19 +479,20 @@ impl super::Handler {
             tracing::info!("Download from {peer_addr}: limit reached for {token} (max {max})");
             return Ok(HttpResponse::gone().body_text("Download limit reached"));
         }
+        self.state.mark_dirty();
         if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
             // --------------------------------------------------
-            // if multifile, then read the zip state and extract what
+            // if multifile, then read the archive state and extract what
             // we need without holding the guard across .await
             // --------------------------------------------------
-            let zs = item.zip_state.read().await;
+            let state = item.archive_state.read().await;
             let name = item.name.clone();
-            let compression = CompressionType::Zip;
-            match &*zs {
+            let compression = item.compression;
+            match &*state {
                 // --------------------------------------------------
-                // preparing the zip file
+                // archive still being prepared
                 // --------------------------------------------------
-                ZipState::Preparing => {
+                ArchiveState::Preparing => {
                     item.download_count.fetch_sub(1, Ordering::AcqRel);
                     tracing::debug!(
                         "Download from {peer_addr}: archive still preparing for {token}"
@@ -462,7 +504,7 @@ impl super::Handler {
                 // --------------------------------------------------
                 // serve the cached archive
                 // --------------------------------------------------
-                ZipState::Ready(cache_path) => {
+                ArchiveState::Ready(cache_path) => {
                     tracing::info!(
                         "Download from {peer_addr}: serving archive '{name}' for {token}"
                     );
@@ -472,14 +514,14 @@ impl super::Handler {
                 // --------------------------------------------------
                 // failed to create the archive
                 // --------------------------------------------------
-                ZipState::Failed(err) => Ok(HttpResponse::internal_server_error()
+                ArchiveState::Failed(err) => Ok(HttpResponse::internal_server_error()
                     .body_text(&format!("Archive creation failed: {err}"))),
                 // --------------------------------------------------
-                // no zip, but a fallback to serve on the file
+                // fallback: should not happen
                 // --------------------------------------------------
-                // this should never happen
-                // --------------------------------------------------
-                ZipState::NotNeeded => self.serve_as_archive(&item.paths, &name, compression).await,
+                ArchiveState::NotNeeded => {
+                    self.serve_as_archive(&item.paths, &name, compression).await
+                }
             }
         } else {
             // --------------------------------------------------
@@ -498,7 +540,8 @@ impl super::Handler {
         &self,
         path: &PathBuf,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let file_contents = match std::fs::read(path) {
+        let path_owned = path.clone();
+        let file_contents = match smol::unblock(move || std::fs::read(&path_owned)).await {
             Ok(contents) => contents,
             Err(e) => {
                 tracing::error!("File read error: {path:?} - {e}");
@@ -520,14 +563,15 @@ impl super::Handler {
 
     /// Serves a previously cached archive from disk.
     ///
-    /// Helper function - used by [`Handler::download`] when [`ZipState::Ready`] is encountered.
+    /// Helper function - used by [`Handler::download`] when [`ArchiveState::Ready`] is encountered.
     async fn serve_cached_archive(
         &self,
         cache_path: &Path,
         name: &str,
         compression: CompressionType,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let file_contents = match std::fs::read(cache_path) {
+        let cache_path_owned = cache_path.to_path_buf();
+        let file_contents = match smol::unblock(move || std::fs::read(&cache_path_owned)).await {
             Ok(contents) => contents,
             Err(e) => {
                 tracing::error!("Failed to read cached archive {cache_path:?}: {e}");
@@ -549,10 +593,10 @@ impl super::Handler {
 
     /// Builds an archive in memory and serves it.
     ///
-    /// Helper function - used by [`Handler::download`] when [`ZipState::NotNeeded`] is encountered,
+    /// Helper function - used by [`Handler::download`] when [`ArchiveState::NotNeeded`] is encountered,
     /// because the file is not an archive and needs to be compressed on the fly.
     ///
-    /// This should theoretically never happen, as [`ZipState::NotNeeded`] is only used for non-archive files.
+    /// This should theoretically never happen, as [`ArchiveState::NotNeeded`] is only used for non-archive files.
     async fn serve_as_archive(
         &self,
         paths: &[PathBuf],
@@ -595,6 +639,7 @@ impl super::Handler {
                 smol::unblock(move || {
                     let hash = compute_cache_key(&paths)?;
                     let ext = compression.extension();
+                    std::fs::create_dir_all(ARCHIVE_CACHE_DIR)?;
                     let cache_path = PathBuf::from(format!("{ARCHIVE_CACHE_DIR}/{hash}{ext}"));
                     if cache_path.exists() {
                         tracing::info!("Archive cache hit for token {token_inner}: {cache_path:?}");
@@ -610,16 +655,161 @@ impl super::Handler {
                 .await;
             let tokens = state.tokens.read().await;
             if let Some(item) = tokens.get(&token) {
-                let mut zs = item.zip_state.write().await;
+                let mut zs = item.archive_state.write().await;
                 match result {
-                    Ok(path) => *zs = ZipState::Ready(path),
+                    Ok(path) => *zs = ArchiveState::Ready(path),
                     Err(e) => {
                         tracing::error!("Archive creation failed for token {token}: {e}");
-                        *zs = ZipState::Failed(e.to_string());
+                        *zs = ArchiveState::Failed(e.to_string());
                     }
                 }
             }
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compression_type_extension() {
+        assert_eq!(CompressionType::Zip.extension(), ".zip");
+        assert_eq!(CompressionType::TarGz.extension(), ".tar.gz");
+        assert_eq!(CompressionType::Tar.extension(), ".tar");
+    }
+
+    #[test]
+    fn test_compression_type_content_type() {
+        assert_eq!(CompressionType::Zip.content_type(), content_type::ZIP);
+        assert_eq!(CompressionType::TarGz.content_type(), content_type::GZIP);
+        assert_eq!(CompressionType::Tar.content_type(), content_type::TAR);
+    }
+
+    #[test]
+    fn test_compression_type_default() {
+        assert_eq!(CompressionType::default(), CompressionType::Zip);
+    }
+
+    #[test]
+    fn test_compression_type_serde() {
+        let zip: CompressionType = serde_json::from_str(r#""zip""#).unwrap();
+        assert_eq!(zip, CompressionType::Zip);
+
+        let targz: CompressionType = serde_json::from_str(r#""tar_gz""#).unwrap();
+        assert_eq!(targz, CompressionType::TarGz);
+
+        // aliases
+        let targz2: CompressionType = serde_json::from_str(r#""targz""#).unwrap();
+        assert_eq!(targz2, CompressionType::TarGz);
+
+        let tgz: CompressionType = serde_json::from_str(r#""tgz""#).unwrap();
+        assert_eq!(tgz, CompressionType::TarGz);
+
+        let tar: CompressionType = serde_json::from_str(r#""tar""#).unwrap();
+        assert_eq!(tar, CompressionType::Tar);
+    }
+
+    #[test]
+    fn test_ensure_extension() {
+        let cf = CompressedFile::new(Vec::new(), CompressionType::Zip);
+        assert_eq!(cf.ensure_extension("archive.zip").as_ref(), "archive.zip");
+        assert_eq!(cf.ensure_extension("archive").as_ref(), "archive.zip");
+
+        let cf = CompressedFile::new(Vec::new(), CompressionType::TarGz);
+        assert_eq!(
+            cf.ensure_extension("archive.tar.gz").as_ref(),
+            "archive.tar.gz"
+        );
+        assert_eq!(cf.ensure_extension("archive").as_ref(), "archive.tar.gz");
+
+        let cf = CompressedFile::new(Vec::new(), CompressionType::Tar);
+        assert_eq!(cf.ensure_extension("archive.tar").as_ref(), "archive.tar");
+        assert_eq!(cf.ensure_extension("archive").as_ref(), "archive.tar");
+    }
+
+    /// Helper: creates a temp dir with test files and returns its path.
+    fn create_test_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.txt"), b"hello world").unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"\x00\x01\x02\x03").unwrap();
+        let sub = dir.path().join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("nested.txt"), b"nested content").unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_archive_zip_roundtrip() {
+        let dir = create_test_dir();
+        let cf = CompressedFile::new(vec![dir.path().to_path_buf()], CompressionType::Zip);
+        let data = cf.write_to_memory().unwrap();
+
+        let cursor = std::io::Cursor::new(data);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        assert!(names.iter().any(|n| n.contains("hello.txt")));
+        assert!(names.iter().any(|n| n.contains("data.bin")));
+        assert!(names.iter().any(|n| n.contains("nested.txt")));
+    }
+
+    #[test]
+    fn test_archive_tar_roundtrip() {
+        let dir = create_test_dir();
+        let cf = CompressedFile::new(vec![dir.path().to_path_buf()], CompressionType::Tar);
+        let data = cf.write_to_memory().unwrap();
+
+        let mut archive = tar::Archive::new(std::io::Cursor::new(data));
+        let names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.contains("hello.txt")));
+        assert!(names.iter().any(|n| n.contains("data.bin")));
+        assert!(names.iter().any(|n| n.contains("nested.txt")));
+    }
+
+    #[test]
+    fn test_archive_targz_roundtrip() {
+        let dir = create_test_dir();
+        let cf = CompressedFile::new(vec![dir.path().to_path_buf()], CompressionType::TarGz);
+        let data = cf.write_to_memory().unwrap();
+
+        let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(data));
+        let mut archive = tar::Archive::new(decoder);
+        let names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n.contains("hello.txt")));
+        assert!(names.iter().any(|n| n.contains("data.bin")));
+        assert!(names.iter().any(|n| n.contains("nested.txt")));
+    }
+
+    #[test]
+    fn test_archive_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("single.txt");
+        std::fs::write(&file_path, b"single file content").unwrap();
+
+        for compression in [
+            CompressionType::Zip,
+            CompressionType::TarGz,
+            CompressionType::Tar,
+        ] {
+            let cf = CompressedFile::new(vec![file_path.clone()], compression);
+            let data = cf.write_to_memory().unwrap();
+            assert!(
+                !data.is_empty(),
+                "archive should not be empty for {compression:?}"
+            );
+        }
     }
 }

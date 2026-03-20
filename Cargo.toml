@@ -2,17 +2,24 @@
 name = "otd"
 version = "0.1.0"
 edition = "2024"
+description = "One-time download link server"
+authors = ["Arpad Voros"]
+license = "MIT"
 publish = false
 
 [dependencies]
 cfg-if = "~1.0"
+flate2 = "~1.1"
 httparse = "~1.10"
+notify = "~8.0"
 itertools = "~0.13"
 jwalk = { version = "~0.8", optional = true }
 rayon = { version = "~1.10", optional = true }
 serde = { version = "~1.0", features = ["derive"] }
 serde_json = "~1.0"
 smol = "~2.0"
+tar = "~0.4"
+thiserror = "~1.0"
 toml = "~1.0"
 tracing = "~0.1"
 tracing-appender = "~0.2"
@@ -30,5 +37,4 @@ tempfile = "~3.14"
 [features]
 default = [ "parallel" ]
 parallel = [ "rayon", "jwalk" ]
-
 doc-tests = [ "visibility" ]

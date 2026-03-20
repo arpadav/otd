@@ -15,7 +15,7 @@ mod links;
 // --------------------------------------------------
 // local
 // --------------------------------------------------
-use crate::{config::ParsedConfig, http::*, types::*};
+use crate::{config::CONFIG, http::*, prelude::*, types::*};
 
 // --------------------------------------------------
 // external
@@ -61,6 +61,7 @@ mod route {
     pub const API_GENERATE: &str = "/api/generate";
     pub const API_TOKENS_BULK_DELETE: &str = "/api/tokens/bulk-delete";
     pub const API_TOKENS_PREFIX: &str = "/api/tokens/";
+    pub const LOGO: &str = "/logo.svg";
 }
 /// HTTP header name constants
 mod header_name {
@@ -85,14 +86,12 @@ mod header_name {
 /// use std::{sync::Arc, path::PathBuf};
 ///
 /// let config = Config::default().parse().unwrap();
-/// let state = Arc::new(AppState::new(PathBuf::from("/files")));
+/// let state = Arc::new(AppState::new());
 /// let handler = Handler::new(state, config);
 /// ```
 pub struct Handler {
     /// Shared application state containing download tokens and configuration
     pub state: Arc<AppState>,
-    /// Pre-computed, immutable configuration (shared via Arc across clones)
-    pub config: Arc<ParsedConfig>,
     /// Cached index.html with all config placeholders replaced
     index_html: Arc<str>,
     /// Cached about.html with CSS injected
@@ -101,6 +100,8 @@ pub struct Handler {
     login_html_base: Arc<str>,
     /// Cached Set-Cookie header for logout (session clear)
     logout_cookie: Arc<str>,
+    /// Cached logo SVG content
+    logo_svg: Arc<str>,
 }
 /// [`Handler`] implementation
 impl Handler {
@@ -115,20 +116,31 @@ impl Handler {
     /// use otd::{Handler, Config, types::AppState};
     /// use std::{sync::Arc, path::PathBuf};
     ///
-    /// let config = Config::default().parse().unwrap();
-    /// let state = Arc::new(AppState::new(PathBuf::from("/files")));
-    /// let handler = Handler::new(state, config);
+    /// let state = Arc::new(AppState::new());
+    /// let handler = Handler::new(state);
     /// ```
-    pub fn new(state: Arc<AppState>, config: ParsedConfig) -> Self {
+    pub async fn new(state: Arc<AppState>) -> Self {
+        let (admin_host, admin_port, download_host, download_port, base_path) = CONFIG
+            .read_with(|cfg| {
+                (
+                    cfg.raw.admin_host.clone(),
+                    cfg.raw.admin_port.to_string(),
+                    cfg.raw.download_host.clone(),
+                    cfg.raw.download_port.to_string(),
+                    cfg.raw.base_path.clone(),
+                )
+            })
+            .await;
+
         let css = include_str!("../../static/style.css");
 
         let index_html: Arc<str> = include_str!("../../static/index.html")
             .replace("{{TAILWIND_CSS}}", css)
-            .replace("{{ADMIN_HOST}}", &config.raw.admin_host)
-            .replace("{{ADMIN_PORT}}", &config.raw.admin_port.to_string())
-            .replace("{{DOWNLOAD_HOST}}", &config.raw.download_host)
-            .replace("{{DOWNLOAD_PORT}}", &config.raw.download_port.to_string())
-            .replace("{{BASE_PATH}}", &config.raw.base_path)
+            .replace("{{ADMIN_HOST}}", &admin_host)
+            .replace("{{ADMIN_PORT}}", &admin_port)
+            .replace("{{DOWNLOAD_HOST}}", &download_host)
+            .replace("{{DOWNLOAD_PORT}}", &download_port)
+            .replace("{{BASE_PATH}}", &base_path)
             .into();
 
         let about_html: Arc<str> = include_str!("../../static/about.html")
@@ -139,19 +151,18 @@ impl Handler {
             .replace("{{TAILWIND_CSS}}", css)
             .into();
 
-        let logout_cookie: Arc<str> = format!(
-            "{}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
-            SESSION_COOKIE_NAME
-        )
-        .into();
+        let logout_cookie: Arc<str> =
+            format!("{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",).into();
+
+        let logo_svg: Arc<str> = include_str!("../../static/logo.svg").into();
 
         Self {
             state,
-            config: Arc::new(config),
             index_html,
             about_html,
             login_html_base,
             logout_cookie,
+            logo_svg,
         }
     }
 
@@ -166,7 +177,7 @@ impl Handler {
     /// # use otd::{Handler, Config, types::AppState};
     /// # use std::{sync::Arc, path::PathBuf};
     /// # let config = Config::default().parse().unwrap();
-    /// # let state = Arc::new(AppState::new(PathBuf::from("/files")));
+    /// # let state = Arc::new(AppState::new());
     /// # let handler = Handler::new(state, config);
     /// # smol::block_on(async {
     /// let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
@@ -183,12 +194,20 @@ impl Handler {
         let mut req = httparse::Request::new(&mut headers);
         match req.parse(request.as_bytes()) {
             Ok(_) => {
-                if let Some(bytes) = self.verify_bearer_auth(&req) {
-                    return Ok(bytes);
-                }
-
                 let method = req.method.unwrap_or(method::GET);
                 let path = req.path.unwrap_or(route::ROOT);
+
+                // Serve logo without auth so it loads on the login page and as favicon
+                if method == method::GET && path == route::LOGO {
+                    return Ok(HttpResponse::ok()
+                        .content_type(content_type::SVG)
+                        .body_text(&self.logo_svg)
+                        .to_bytes());
+                }
+
+                if let Some(bytes) = self.verify_bearer_auth(&req).await {
+                    return Ok(bytes);
+                }
                 match method {
                     method::POST | method::DELETE | "PUT" | "PATCH" => {
                         tracing::info!("Admin request: {method} {path} from {peer_addr}");
@@ -231,7 +250,7 @@ impl Handler {
     /// # use otd::{Handler, Config, types::AppState};
     /// # use std::{sync::Arc, path::PathBuf};
     /// # let config = Config::default().parse().unwrap();
-    /// # let state = Arc::new(AppState::new(PathBuf::from("/files")));
+    /// # let state = Arc::new(AppState::new());
     /// # let handler = Handler::new(state, config);
     /// # smol::block_on(async {
     /// let request = "GET /document.pdf?k=550e8400-e29b-41d4-a716-446655440000 HTTP/1.1\r\n\r\n";
@@ -278,8 +297,8 @@ impl Handler {
     /// # Returns
     ///
     /// `None` if auth passes or no token is configured; `Some(401_bytes)` if auth fails.
-    fn verify_bearer_auth(&self, req: &httparse::Request<'_, '_>) -> Option<Vec<u8>> {
-        let expected_token = self.config.raw.admin_token.as_ref()?;
+    async fn verify_bearer_auth(&self, req: &httparse::Request<'_, '_>) -> Option<Vec<u8>> {
+        let expected_token = CONFIG.read_with(|cfg| cfg.raw.admin_token.clone()).await?;
         let auth_header = req
             .headers
             .iter()
@@ -322,8 +341,10 @@ impl Handler {
         if is_loopback {
             return None;
         }
-
-        if self.config.raw.admin_password.is_none() {
+        if CONFIG
+            .read_with(|cfg| cfg.raw.admin_password.is_none())
+            .await
+        {
             let html =
                 self.login_page("External access requires admin_password to be set in config.");
             return Some(
@@ -400,7 +421,10 @@ impl Handler {
             };
             let params = helpers::parse_query(&body);
             let password = params.get("password").cloned().unwrap_or_default();
-            let expected = self.config.raw.admin_password.as_deref().unwrap_or("");
+
+            let expected = CONFIG
+                .read_with(|cfg| cfg.raw.admin_password.clone().unwrap_or_else(String::new))
+                .await;
 
             if !expected.is_empty() && password == expected {
                 let token = Uuid::new_v4().to_string();
@@ -546,28 +570,37 @@ impl Handler {
     /// # use otd::{Handler, Config, types::AppState};
     /// # use std::{sync::Arc, path::PathBuf};
     /// # let config = Config::default().parse().unwrap();
-    /// # let state = Arc::new(AppState::new(PathBuf::from("/files")));
+    /// # let state = Arc::new(AppState::new());
     /// # let handler = Handler::new(state, config);
+    /// # smol::block_on(async {
     /// // Safe path - returns Some(canonical_path)
-    /// let ok = handler.safe_join("subdir/file.txt");
+    /// let ok = handler.safe_join("subdir/file.txt").await;
     /// // Traversal - returns None
-    /// let bad = handler.safe_join("../../etc/passwd");
+    /// let bad = handler.safe_join("../../etc/passwd").await;
     /// assert!(bad.is_none());
+    /// # });
     /// ```
-    pub fn safe_join(&self, relative: &str) -> Option<PathBuf> {
-        let joined = self.state.base_path.join(relative);
+    pub async fn safe_join(&self, relative: &str) -> Option<PathBuf> {
+        let base_path = CONFIG
+            .read_with(|cfg| cfg.canonical_base_path.clone())
+            .await;
+        // --------------------------------------------------
         // canonicalize resolves symlinks and `..` components; if the path
         // doesn't exist it returns an error, which we propagate as None.
-        let canonical = std::fs::canonicalize(&joined).ok()?;
-        if canonical.starts_with(&self.state.base_path) {
-            Some(canonical)
-        } else {
-            tracing::warn!(
-                "Path escape blocked: '{relative}' resolves to '{canonical:?}' outside base '{base:?}'",
-                base = self.state.base_path
-            );
-            None
-        }
+        // --------------------------------------------------
+        let joined = base_path.join(relative);
+        std::fs::canonicalize(&joined)
+            .inspect_err(|e| tracing::warn!("Failed to canonicalize '{relative}': {e}"))
+            .ok()
+            .filter(|c| {
+                let safe = c.starts_with(&base_path);
+                if !safe {
+                    tracing::warn!(
+                        "Path escape blocked: '{relative}' resolves to '{c:?}' outside base '{base_path:?}'"
+                    );
+                }
+                safe
+            })
     }
 
     /// Renders the login page with an optional message.
@@ -631,10 +664,11 @@ impl Handler {
     /// # Returns
     ///
     /// The complete download URL.
-    pub(crate) fn download_url(&self, name: &str, token: &str) -> String {
+    pub(crate) async fn download_url(&self, name: &str, token: &str) -> String {
+        let download_base_url = CONFIG.read_with(|cfg| cfg.download_base_url.clone()).await;
         format!(
             "{}/{}?k={}",
-            self.config.download_base_url,
+            download_base_url,
             helpers::url_encode(name),
             token
         )
@@ -645,11 +679,11 @@ impl Clone for Handler {
     fn clone(&self) -> Self {
         Self {
             state: Arc::clone(&self.state),
-            config: Arc::clone(&self.config),
             index_html: Arc::clone(&self.index_html),
             about_html: Arc::clone(&self.about_html),
             login_html_base: Arc::clone(&self.login_html_base),
             logout_cookie: Arc::clone(&self.logout_cookie),
+            logo_svg: Arc::clone(&self.logo_svg),
         }
     }
 }
@@ -855,6 +889,9 @@ mod tests {
     use crate::Config;
     use std::path::PathBuf;
 
+    /// Tests that depend on the global CONFIG must not run in parallel.
+    static HOT_CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_url_encoding() {
         assert_eq!(helpers::url_encode("hello world"), "hello+world");
@@ -876,15 +913,28 @@ mod tests {
         assert_eq!(params.get("path"), Some(&"folder/file".to_string()));
     }
 
-    fn make_handler_with_token(token: Option<&str>) -> Handler {
-        let config = Config {
+    /// init config for testing
+    fn init_hot_config(token: Option<&str>, password: Option<&str>, base_path: PathBuf) {
+        let cfg = Config {
             admin_token: token.map(|t| t.to_string()),
+            admin_password: password.map(|p| p.to_string()),
+            base_path: base_path.to_string_lossy().into(),
             ..Default::default()
-        }
-        .parse()
-        .unwrap();
-        let state = Arc::new(AppState::new(PathBuf::from("/tmp")));
-        Handler::new(state, config)
+        };
+        let parsed = cfg.parse(Default::default());
+        let mut cfg = CONFIG.write_blocking();
+        *cfg = parsed;
+    }
+
+    fn make_handler_with_token(token: Option<&str>) -> Handler {
+        init_hot_config(token, None, PathBuf::from("/tmp"));
+
+        smol::block_on(CONFIG.write_with(|cfg| {
+            cfg.raw.admin_token = token.map(|t| t.to_string());
+        }));
+        let state = Arc::new(AppState::new());
+
+        smol::block_on(Handler::new(state))
     }
 
     fn loopback_addr() -> std::net::SocketAddr {
@@ -894,6 +944,7 @@ mod tests {
     /// When no token is configured, all admin requests are allowed.
     #[test]
     fn test_admin_auth_disabled_allows_all() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let handler = make_handler_with_token(None);
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let response =
@@ -909,6 +960,7 @@ mod tests {
     /// When token is configured, missing Authorization header returns 401.
     #[test]
     fn test_admin_auth_required_rejects_missing_header() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let handler = make_handler_with_token(Some("secret123"));
         let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let response =
@@ -921,6 +973,7 @@ mod tests {
     /// Wrong token returns 401.
     #[test]
     fn test_admin_auth_required_rejects_wrong_token() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let handler = make_handler_with_token(Some("secret123"));
         let request =
             "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrongtoken\r\n\r\n";
@@ -933,6 +986,7 @@ mod tests {
     /// Correct token is accepted.
     #[test]
     fn test_admin_auth_required_accepts_correct_token() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let handler = make_handler_with_token(Some("secret123"));
         let request =
             "GET / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret123\r\n\r\n";
@@ -946,21 +1000,22 @@ mod tests {
     }
 
     fn make_handler_with_base(base: PathBuf) -> Handler {
-        let config = Config::default().parse().unwrap();
-        let state = Arc::new(AppState::new(base));
-        Handler::new(state, config)
+        init_hot_config(None, None, base);
+        let state = Arc::new(AppState::new());
+        smol::block_on(Handler::new(state))
     }
 
     /// safe_join with a normal relative path returns the canonical path.
     #[test]
     fn test_safe_join_valid_path() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file.txt");
         std::fs::write(&file, b"hello").unwrap();
 
         let handler = make_handler_with_base(dir.path().to_path_buf());
 
-        let result = handler.safe_join("file.txt");
+        let result = smol::block_on(handler.safe_join("file.txt"));
         assert!(result.is_some());
         assert_eq!(result.unwrap(), file.canonicalize().unwrap());
     }
@@ -968,16 +1023,18 @@ mod tests {
     /// safe_join must block `../` path traversal.
     #[test]
     fn test_safe_join_blocks_traversal() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let handler = make_handler_with_base(dir.path().to_path_buf());
 
         // Non-existent traversal path - canonicalize fails → None
-        assert!(handler.safe_join("../../../etc/passwd").is_none());
+        assert!(smol::block_on(handler.safe_join("../../../etc/passwd")).is_none());
     }
 
     /// safe_join must block symlinks that point outside base_path.
     #[test]
     fn test_safe_join_blocks_symlink_escape() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let link_path = dir.path().join("evil_link");
         // Create symlink inside base_path → /etc/passwd outside base_path
@@ -986,12 +1043,13 @@ mod tests {
         let handler = make_handler_with_base(dir.path().to_path_buf());
 
         // Must be blocked - /etc/passwd is outside the base dir
-        assert!(handler.safe_join("evil_link").is_none());
+        assert!(smol::block_on(handler.safe_join("evil_link")).is_none());
     }
 
     /// safe_join must allow symlinks that resolve within base_path.
     #[test]
     fn test_safe_join_allows_internal_symlink() {
+        let _lock = HOT_CONFIG_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let real_file = dir.path().join("real.txt");
         std::fs::write(&real_file, b"data").unwrap();
@@ -1001,7 +1059,7 @@ mod tests {
         let handler = make_handler_with_base(dir.path().to_path_buf());
 
         // Should succeed - symlink resolves within base_path
-        let result = handler.safe_join("link.txt");
+        let result = smol::block_on(handler.safe_join("link.txt"));
         assert!(result.is_some());
         assert_eq!(result.unwrap(), real_file.canonicalize().unwrap());
     }

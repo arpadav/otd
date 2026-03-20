@@ -1,7 +1,7 @@
 //! Download link generation and token management.
 //!
 //! Author: aav
-use super::download::{DEFAULT_ARCHIVE_NAME, DEFAULT_DIR_NAME, DEFAULT_DOWNLOAD_NAME};
+use super::download::{DEFAULT_DIR_NAME, DEFAULT_DOWNLOAD_NAME};
 use crate::{http::*, types::*};
 
 use std::sync::{Arc, atomic::Ordering};
@@ -28,7 +28,7 @@ impl super::Handler {
         // Validate all paths - safe_join canonicalizes and checks containment,
         // blocking both `../` traversal and symlink-based escapes.
         for path_str in &generate_req.paths {
-            match self.safe_join(path_str) {
+            match self.safe_join(path_str).await {
                 Some(full_path) => full_paths.push(full_path),
                 None => {
                     tracing::warn!(
@@ -43,6 +43,9 @@ impl super::Handler {
         let is_multi_file =
             full_paths.len() > 1 || (full_paths.len() == 1 && full_paths[0].is_dir());
 
+        let compression = generate_req.format;
+        let ext = compression.extension();
+
         // Determine the name
         let name = if let Some(custom_name) = generate_req.name {
             custom_name
@@ -50,10 +53,11 @@ impl super::Handler {
             let path = &full_paths[0];
             if path.is_dir() {
                 format!(
-                    "{}.zip",
+                    "{}{}",
                     path.file_name()
                         .and_then(|n| n.to_str())
-                        .unwrap_or(DEFAULT_DIR_NAME)
+                        .unwrap_or(DEFAULT_DIR_NAME),
+                    ext
                 )
             } else {
                 path.file_name()
@@ -62,7 +66,7 @@ impl super::Handler {
                     .to_string()
             }
         } else {
-            DEFAULT_ARCHIVE_NAME.to_string()
+            format!("output{ext}")
         };
 
         let max_downloads = generate_req.max_downloads.unwrap_or(1).max(1);
@@ -70,10 +74,10 @@ impl super::Handler {
             .expires_in_seconds
             .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
 
-        let zip_state = if is_multi_file {
-            smol::lock::RwLock::new(ZipState::Preparing)
+        let archive_state = if is_multi_file {
+            smol::lock::RwLock::new(ArchiveState::Preparing)
         } else {
-            smol::lock::RwLock::new(ZipState::NotNeeded)
+            smol::lock::RwLock::new(ArchiveState::NotNeeded)
         };
 
         let item = DownloadItem {
@@ -84,10 +88,12 @@ impl super::Handler {
             download_count: std::sync::atomic::AtomicU32::new(0),
             expires_at,
             created_at: std::time::Instant::now(),
-            zip_state,
+            compression,
+            archive_state,
         };
 
         self.state.tokens.write().await.insert(token.clone(), item);
+        self.state.mark_dirty();
 
         // Spawn background archive creation for multi-file downloads
         if is_multi_file {
@@ -95,14 +101,13 @@ impl super::Handler {
                 Arc::clone(&self.state),
                 token.clone(),
                 full_paths,
-                super::download::CompressionType::Zip,
+                compression,
             );
         }
 
         // Create URL with filename for better wget/browser behavior
-        let download_url = self.download_url(&name, &token);
+        let download_url = self.download_url(&name, &token).await;
         tracing::info!("Generated download link for '{name}': {token}");
-
         let response = GenerateResponse {
             token,
             download_url,
@@ -116,11 +121,11 @@ impl super::Handler {
         &self,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let tokens = self.state.tokens.read().await;
-        let mut items = Vec::new();
+        let mut items = Vec::with_capacity(tokens.len());
 
         let now = std::time::Instant::now();
         for (token, item) in tokens.iter() {
-            let download_url = self.download_url(&item.name, token);
+            let download_url = self.download_url(&item.name, token).await;
             let count = item.download_count.load(Ordering::Relaxed);
             let expired = item.expires_at.map(|e| now >= e).unwrap_or(false);
             let expires_in_seconds = item.expires_at.and_then(|e| {
@@ -130,13 +135,13 @@ impl super::Handler {
                     None
                 }
             });
-            let zip_status = {
-                let zs = item.zip_state.read().await;
-                match &*zs {
-                    ZipState::NotNeeded => "not_needed",
-                    ZipState::Preparing => "preparing",
-                    ZipState::Ready(_) => "ready",
-                    ZipState::Failed(_) => "failed",
+            let archive_status = {
+                let state = item.archive_state.read().await;
+                match &*state {
+                    ArchiveState::NotNeeded => "not_needed",
+                    ArchiveState::Preparing => "preparing",
+                    ArchiveState::Ready(_) => "ready",
+                    ArchiveState::Failed(_) => "failed",
                 }
             };
             items.push(TokenListItem {
@@ -149,8 +154,12 @@ impl super::Handler {
                 expired,
                 expires_in_seconds,
                 download_url,
-                paths: item.paths.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-                zip_status: zip_status.to_string(),
+                paths: item
+                    .paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect(),
+                archive_status: archive_status.to_string(),
             });
         }
 
@@ -185,6 +194,9 @@ impl super::Handler {
         });
 
         let removed = before - tokens.len();
+        if removed > 0 {
+            self.state.mark_dirty();
+        }
         let filter = &req.filter;
         tracing::info!("Bulk delete (filter={filter}): removed {removed} tokens");
 
@@ -200,6 +212,7 @@ impl super::Handler {
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let mut tokens = self.state.tokens.write().await;
         if tokens.remove(token).is_some() {
+            self.state.mark_dirty();
             tracing::info!("Deleted token: {token}");
             HttpResponse::ok()
                 .body_json(&BulkDeleteResponse { removed: 1 })
