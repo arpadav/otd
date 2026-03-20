@@ -71,6 +71,7 @@ mod header_name {
     pub const SET_COOKIE: &str = "Set-Cookie";
 }
 
+#[cfg_attr(feature = "doc-tests", visibility::make(pub))]
 /// Main request handler containing business logic for both admin and download servers.
 ///
 /// The handler manages file browsing, download link generation, and file serving.
@@ -82,7 +83,7 @@ mod header_name {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use otd::{Handler, types::AppState};
+/// use otd::{handlers::Handler, types::AppState};
 /// use std::sync::Arc;
 ///
 /// let state = Arc::new(AppState::new());
@@ -90,9 +91,9 @@ mod header_name {
 /// let handler = Handler::new(state).await;
 /// # });
 /// ```
-pub struct Handler {
+pub(crate) struct Handler {
     /// Shared application state containing download tokens and configuration
-    pub state: Arc<AppState>,
+    pub(crate) state: Arc<AppState>,
     /// Cached index.html with all config placeholders replaced
     index_html: Arc<str>,
     /// Cached about.html with CSS injected
@@ -106,6 +107,7 @@ pub struct Handler {
 }
 /// [`Handler`] implementation
 impl Handler {
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Creates a new handler with the given state and pre-parsed configuration.
     ///
     /// Pre-computes and caches all HTML templates at construction time so that
@@ -114,13 +116,15 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use otd::{Handler, Config, types::AppState};
-    /// use std::{sync::Arc, path::PathBuf};
+    /// use otd::{handlers::Handler, types::AppState};
+    /// use std::sync::Arc;
     ///
     /// let state = Arc::new(AppState::new());
-    /// let handler = Handler::new(state);
+    /// # smol::block_on(async {
+    /// let handler = Handler::new(state).await;
+    /// # });
     /// ```
-    pub async fn new(state: Arc<AppState>) -> Self {
+    pub(crate) async fn new(state: Arc<AppState>) -> Self {
         let (admin_host, admin_port, download_host, download_port, base_path) = CONFIG
             .read_with(|cfg| {
                 (
@@ -167,6 +171,7 @@ impl Handler {
         }
     }
 
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Handles requests to the admin interface (file browsing, link generation).
     ///
     /// Orchestrates the admin request pipeline: parse → authenticate → log →
@@ -175,7 +180,7 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, types::AppState};
+    /// # use otd::{handlers::Handler, types::AppState};
     /// # use std::sync::Arc;
     /// # smol::block_on(async {
     /// # let state = Arc::new(AppState::new());
@@ -185,7 +190,7 @@ impl Handler {
     /// let response = handler.handle_admin_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_admin_request(
+    pub(crate) async fn handle_admin_request(
         &self,
         request: &str,
         peer_addr: std::net::SocketAddr,
@@ -242,12 +247,13 @@ impl Handler {
         }
     }
 
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Handles requests to the download server (file downloads only).
     ///
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, types::AppState};
+    /// # use otd::{handlers::Handler, types::AppState};
     /// # use std::sync::Arc;
     /// # smol::block_on(async {
     /// # let state = Arc::new(AppState::new());
@@ -257,7 +263,7 @@ impl Handler {
     /// let response = handler.handle_download_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_download_request(
+    pub(crate) async fn handle_download_request(
         &self,
         request: &str,
         peer_addr: std::net::SocketAddr,
@@ -557,6 +563,7 @@ impl Handler {
         HttpResponse::ok().body_json(&stats).map_err(Into::into)
     }
 
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Safely joins `relative` onto `base_path` and verifies the resolved path
     /// is still within `base_path` after canonicalization.
     ///
@@ -566,7 +573,7 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, types::AppState};
+    /// # use otd::{handlers::Handler, types::AppState};
     /// # use std::sync::Arc;
     /// # smol::block_on(async {
     /// # let state = Arc::new(AppState::new());
@@ -578,7 +585,7 @@ impl Handler {
     /// assert!(bad.is_none());
     /// # });
     /// ```
-    pub async fn safe_join(&self, relative: &str) -> Option<PathBuf> {
+    pub(crate) async fn safe_join(&self, relative: &str) -> Option<PathBuf> {
         let base_path = CONFIG
             .read_with(|cfg| cfg.canonical_base_path.clone())
             .await;

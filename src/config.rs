@@ -25,14 +25,14 @@ const OTD_CONFIG_ENVIRONMENT_VAR: &str = "OTD_CONFIG_FILE";
 /// Environment variable name used to specify the base path for the application.
 const OTD_BASE_ENVIRONMENT_VAR: &str = "OTD_BASE_PATH";
 /// Environment variable name used to specify the log level for the application.
-pub const OTD_LOG_ENVIRONMENT_VAR: &str = "OTD_LOG";
+pub(crate) const OTD_LOG_ENVIRONMENT_VAR: &str = "OTD_LOG";
 /// Environment variable name used to specify the path to the log file for the application.
-pub const OTD_LOG_FILE_ENVIRONMENT_VAR: &str = "OTD_LOG_FILE";
+pub(crate) const OTD_LOG_FILE_ENVIRONMENT_VAR: &str = "OTD_LOG_FILE";
 /// Default log file name to use if no path is specified in the config or environment.
 ///
 /// Note that if both not defined in config OR env, this will not be used. Only used if
 /// it is defined, but there is an error/issue with the parsing of the filename.
-pub const OTD_LOG_FILE_DEFAULT_NAME: &str = "otd.log";
+pub(crate) const OTD_LOG_FILE_DEFAULT_NAME: &str = "otd.log";
 /// Default admin port to use if no port is specified in the config or environment.
 const DEFAULT_ADMIN_PORT: u16 = 15204;
 /// Default admin host to use if no host is specified in the config or environment.
@@ -58,7 +58,7 @@ static LAST_RELOAD: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mu
 ///
 /// Accessed via `.read().await` in async handler contexts.
 /// Updated by the [`notify`] config watcher via `smol::block_on(lock.write())`.
-pub static CONFIG: LazyLock<RwLock<ParsedConfig>> = LazyLock::new(|| {
+pub(crate) static CONFIG: LazyLock<RwLock<ParsedConfig>> = LazyLock::new(|| {
     // --------------------------------------------------
     // read in
     // --------------------------------------------------

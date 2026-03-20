@@ -18,7 +18,7 @@ const STATE_VERSION: u32 = 1;
 
 #[derive(Debug)]
 /// Tracks the lifecycle of an archive for a download item.
-pub enum ArchiveState {
+pub(crate) enum ArchiveState {
     /// Single-file download - no archive needed
     NotNeeded,
     /// Archive is being created in the background
@@ -35,25 +35,25 @@ pub enum ArchiveState {
 /// Each download item is associated with a unique token and can contain
 /// multiple paths that will be served as a single download (zip for multiple items).
 ///
-pub struct DownloadItem {
+pub(crate) struct DownloadItem {
     /// List of file/folder paths included in this download
-    pub paths: Vec<PathBuf>,
+    pub(crate) paths: Vec<PathBuf>,
     /// Whether this download contains multiple files/folders (true if paths.len() > 1)
-    pub is_multi_file: bool,
+    pub(crate) is_multi_file: bool,
     /// Display name for the download (e.g., "my-files.zip" or "document.pdf")
-    pub name: String,
+    pub(crate) name: String,
     /// Maximum allowed downloads before the link becomes invalid
-    pub max_downloads: u32,
+    pub(crate) max_downloads: u32,
     /// Current download count for this item
-    pub download_count: AtomicU32,
+    pub(crate) download_count: AtomicU32,
     /// Optional expiration time for the download link (None if it does not expire)
-    pub expires_at: Option<std::time::Instant>,
+    pub(crate) expires_at: Option<std::time::Instant>,
     /// When this download item was created
-    pub created_at: std::time::Instant,
+    pub(crate) created_at: std::time::Instant,
     /// Compression format for archive downloads.
-    pub compression: crate::handlers::download::CompressionType,
+    pub(crate) compression: crate::handlers::download::CompressionType,
     /// Archive preparation state (interior-mutable; never held across .await)
-    pub archive_state: smol::lock::RwLock<ArchiveState>,
+    pub(crate) archive_state: smol::lock::RwLock<ArchiveState>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,80 +188,80 @@ pub struct StagedFile {
 /// Dashboard statistics response payload.
 ///
 /// Returned by the `/api/stats` endpoint with aggregate token and download metrics.
-pub struct StatsResponse {
+pub(crate) struct StatsResponse {
     /// Number of tokens that are still valid and have remaining downloads
-    pub active_tokens: u32,
+    pub(crate) active_tokens: u32,
     /// Number of tokens that have reached their download limit
-    pub used_tokens: u32,
+    pub(crate) used_tokens: u32,
     /// Number of tokens that have passed their expiration time
-    pub expired_tokens: u32,
+    pub(crate) expired_tokens: u32,
     /// Total downloads across all tokens
-    pub total_downloads: u64,
+    pub(crate) total_downloads: u64,
     /// Server uptime in seconds
-    pub uptime_seconds: u64,
+    pub(crate) uptime_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
 /// Represents a single token in the `/api/tokens` listing.
-pub struct TokenListItem {
+pub(crate) struct TokenListItem {
     /// Unique token identifier
-    pub token: String,
+    pub(crate) token: String,
     /// Display name for the download
-    pub name: String,
+    pub(crate) name: String,
     /// Whether this download contains multiple files/folders
-    pub is_multi_file: bool,
+    pub(crate) is_multi_file: bool,
     /// Current download count
-    pub download_count: u32,
+    pub(crate) download_count: u32,
     /// Maximum allowed downloads
-    pub max_downloads: u32,
+    pub(crate) max_downloads: u32,
     /// Remaining downloads before the link becomes invalid
-    pub remaining_downloads: u32,
+    pub(crate) remaining_downloads: u32,
     /// Whether the token has expired
-    pub expired: bool,
+    pub(crate) expired: bool,
     /// Seconds until expiration (None if already expired or no expiry set)
-    pub expires_in_seconds: Option<u64>,
+    pub(crate) expires_in_seconds: Option<u64>,
     /// Full download URL
-    pub download_url: String,
+    pub(crate) download_url: String,
     /// List of file/folder paths included in this download
-    pub paths: Vec<String>,
+    pub(crate) paths: Vec<String>,
     /// Current archive preparation status
-    pub archive_status: String,
+    pub(crate) archive_status: String,
 }
 
 #[derive(Debug, Serialize)]
 /// Response payload for bulk-delete and single-delete operations.
-pub struct BulkDeleteResponse {
+pub(crate) struct BulkDeleteResponse {
     /// Number of tokens removed
-    pub removed: usize,
+    pub(crate) removed: usize,
 }
 
 /// Serializable snapshot of all tokens for persistence across restarts.
 #[derive(Serialize, Deserialize)]
-pub struct PersistedState {
+pub(crate) struct PersistedState {
     /// Format version for forward compatibility.
-    pub version: u32,
+    pub(crate) version: u32,
     /// Unix timestamp when the state was saved.
-    pub saved_at: u64,
+    pub(crate) saved_at: u64,
     /// All active download tokens.
-    pub tokens: HashMap<String, PersistedDownloadItem>,
+    pub(crate) tokens: HashMap<String, PersistedDownloadItem>,
 }
 
 /// Serializable representation of a single download token.
 #[derive(Serialize, Deserialize)]
-pub struct PersistedDownloadItem {
-    pub paths: Vec<PathBuf>,
-    pub is_multi_file: bool,
-    pub name: String,
-    pub max_downloads: u32,
-    pub download_count: u32,
-    pub expires_in_seconds: Option<u64>,
-    pub created_ago_seconds: u64,
-    pub compression: crate::handlers::download::CompressionType,
+pub(crate) struct PersistedDownloadItem {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) is_multi_file: bool,
+    pub(crate) name: String,
+    pub(crate) max_downloads: u32,
+    pub(crate) download_count: u32,
+    pub(crate) expires_in_seconds: Option<u64>,
+    pub(crate) created_ago_seconds: u64,
+    pub(crate) compression: crate::handlers::download::CompressionType,
 }
 
 impl PersistedDownloadItem {
     /// Converts a live [`DownloadItem`] into its serializable form.
-    pub fn from_download_item(item: &DownloadItem, now: std::time::Instant) -> Self {
+    pub(crate) fn from_download_item(item: &DownloadItem, now: std::time::Instant) -> Self {
         let count = item
             .download_count
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -286,7 +286,7 @@ impl PersistedDownloadItem {
     }
 
     /// Converts back into a live [`DownloadItem`].
-    pub fn into_download_item(self) -> DownloadItem {
+    pub(crate) fn into_download_item(self) -> DownloadItem {
         let now = std::time::Instant::now();
         let expires_at = self
             .expires_in_seconds
@@ -326,13 +326,13 @@ impl PersistedDownloadItem {
 /// ```
 pub struct AppState {
     /// Map of active download tokens to their corresponding items
-    pub tokens: RwLock<HashMap<String, DownloadItem>>,
+    pub(crate) tokens: RwLock<HashMap<String, DownloadItem>>,
     /// Active login sessions: token → creation time
-    pub sessions: RwLock<HashMap<String, std::time::Instant>>,
+    pub(crate) sessions: RwLock<HashMap<String, std::time::Instant>>,
     /// Server start time for uptime tracking
-    pub started_at: std::time::Instant,
+    pub(crate) started_at: std::time::Instant,
     /// Set when tokens change; cleared after state is persisted.
-    pub dirty: std::sync::atomic::AtomicBool,
+    pub(crate) dirty: std::sync::atomic::AtomicBool,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -360,7 +360,7 @@ impl AppState {
     }
 
     /// Creates an `AppState` pre-loaded with persisted tokens.
-    pub fn with_tokens(tokens: HashMap<String, DownloadItem>) -> Self {
+    pub(crate) fn with_tokens(tokens: HashMap<String, DownloadItem>) -> Self {
         Self {
             tokens: RwLock::new(tokens),
             sessions: RwLock::new(HashMap::new()),
@@ -370,12 +370,12 @@ impl AppState {
     }
 
     /// Marks the state as dirty so it will be persisted on the next save cycle.
-    pub fn mark_dirty(&self) {
+    pub(crate) fn mark_dirty(&self) {
         self.dirty.store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Saves the current token state to disk (atomic write).
-    pub async fn save_state(
+    pub(crate) async fn save_state(
         &self,
         dir: &std::path::Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -407,7 +407,7 @@ impl AppState {
     /// Loads persisted state from disk, returning the token map.
     ///
     /// Skips tokens that have already expired.
-    pub fn load_state(
+    pub(crate) fn load_state(
         dir: &std::path::Path,
     ) -> Result<HashMap<String, DownloadItem>, Box<dyn std::error::Error + Send + Sync>> {
         let path = dir.join(STATE_FILE);

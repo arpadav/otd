@@ -192,7 +192,7 @@ impl<W: Write + std::io::Seek> ArchiveWriter<W> {
 /// `CompressedFile` owns the list of source paths and the target compression
 /// format. Its methods create the archive through [`ArchiveWriter`], which
 /// dispatches to the correct backend based on [`CompressionType`].
-pub struct CompressedFile {
+pub(crate) struct CompressedFile {
     /// Source file/directory paths to include in the archive.
     paths: Vec<PathBuf>,
     /// Which compression format to produce.
@@ -201,7 +201,7 @@ pub struct CompressedFile {
 /// [`CompressedFile`] implementation
 impl CompressedFile {
     /// Creates a new `CompressedFile` for the given paths and format.
-    pub fn new(paths: Vec<PathBuf>, compression: CompressionType) -> Self {
+    pub(crate) fn new(paths: Vec<PathBuf>, compression: CompressionType) -> Self {
         Self { paths, compression }
     }
 
@@ -216,7 +216,7 @@ impl CompressedFile {
     /// let compressed = CompressedFile::new(paths, CompressionType::Zip);
     /// compressed.write_to_file(&PathBuf::from("output.zip")).unwrap();
     /// ```
-    pub fn write_to_file(
+    pub(crate) fn write_to_file(
         &self,
         output: &Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -227,7 +227,7 @@ impl CompressedFile {
     }
 
     /// Builds the archive in memory and returns the raw bytes
-    pub fn write_to_memory(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) fn write_to_memory(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut buf = Vec::new();
         {
             let cursor = std::io::Cursor::new(&mut buf);
@@ -239,7 +239,7 @@ impl CompressedFile {
     }
 
     /// Ensures the archive name has the correct extension for this format.
-    pub fn ensure_extension<'a>(&self, name: &'a str) -> std::borrow::Cow<'a, str> {
+    pub(crate) fn ensure_extension<'a>(&self, name: &'a str) -> std::borrow::Cow<'a, str> {
         let ext = self.compression.extension();
         if name.ends_with(ext) {
             std::borrow::Cow::Borrowed(name)
