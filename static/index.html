@@ -60,7 +60,7 @@
                                     alt="OTD"
                                     class="w-5 h-5"
                                 />
-                                OTD
+                                One-Time Downloads
                             </h1>
                             <!-- Desktop nav -->
                             <nav
@@ -1275,8 +1275,9 @@
                 const isMulti =
                     stagedFiles.size > 1 ||
                     Array.from(stagedFiles.values()).some((f) => f.is_dir);
-                document.getElementById("formatRow").style.display =
-                    isMulti ? "" : "none";
+                document.getElementById("formatRow").style.display = isMulti
+                    ? ""
+                    : "none";
             }
 
             // Select all
