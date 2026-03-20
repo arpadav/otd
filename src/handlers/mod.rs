@@ -82,7 +82,7 @@ mod header_name {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use otd::{Handler, types::AppState};
+/// use otd::{handlers::Handler, types::AppState};
 /// use std::sync::Arc;
 ///
 /// let state = Arc::new(AppState::new());
@@ -90,9 +90,10 @@ mod header_name {
 /// let handler = Handler::new(state).await;
 /// # });
 /// ```
-pub struct Handler {
+#[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+pub(crate) struct Handler {
     /// Shared application state containing download tokens and configuration
-    pub state: Arc<AppState>,
+    pub(crate) state: Arc<AppState>,
     /// Cached index.html with all config placeholders replaced
     index_html: Arc<str>,
     /// Cached about.html with CSS injected
@@ -114,13 +115,16 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use otd::{Handler, Config, types::AppState};
-    /// use std::{sync::Arc, path::PathBuf};
+    /// use otd::{handlers::Handler, types::AppState};
+    /// use std::sync::Arc;
     ///
     /// let state = Arc::new(AppState::new());
-    /// let handler = Handler::new(state);
+    /// # smol::block_on(async {
+    /// let handler = Handler::new(state).await;
+    /// # });
     /// ```
-    pub async fn new(state: Arc<AppState>) -> Self {
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    pub(crate) async fn new(state: Arc<AppState>) -> Self {
         let (admin_host, admin_port, download_host, download_port, base_path) = CONFIG
             .read_with(|cfg| {
                 (
@@ -175,7 +179,7 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, types::AppState};
+    /// # use otd::{handlers::Handler, types::AppState};
     /// # use std::sync::Arc;
     /// # smol::block_on(async {
     /// # let state = Arc::new(AppState::new());
@@ -185,7 +189,8 @@ impl Handler {
     /// let response = handler.handle_admin_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_admin_request(
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    pub(crate) async fn handle_admin_request(
         &self,
         request: &str,
         peer_addr: std::net::SocketAddr,
@@ -247,7 +252,7 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, types::AppState};
+    /// # use otd::{handlers::Handler, types::AppState};
     /// # use std::sync::Arc;
     /// # smol::block_on(async {
     /// # let state = Arc::new(AppState::new());
@@ -257,7 +262,8 @@ impl Handler {
     /// let response = handler.handle_download_request(request, peer_addr).await.unwrap();
     /// # });
     /// ```
-    pub async fn handle_download_request(
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    pub(crate) async fn handle_download_request(
         &self,
         request: &str,
         peer_addr: std::net::SocketAddr,
@@ -566,7 +572,7 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, types::AppState};
+    /// # use otd::{handlers::Handler, types::AppState};
     /// # use std::sync::Arc;
     /// # smol::block_on(async {
     /// # let state = Arc::new(AppState::new());
@@ -578,7 +584,8 @@ impl Handler {
     /// assert!(bad.is_none());
     /// # });
     /// ```
-    pub async fn safe_join(&self, relative: &str) -> Option<PathBuf> {
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
+    pub(crate) async fn safe_join(&self, relative: &str) -> Option<PathBuf> {
         let base_path = CONFIG
             .read_with(|cfg| cfg.canonical_base_path.clone())
             .await;

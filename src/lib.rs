@@ -69,7 +69,6 @@ pub mod prelude {
 // re-exports
 // --------------------------------------------------
 pub use config::{Config, ParsedConfig};
-pub use handlers::Handler;
 pub use server::Server;
 pub use types::*;
 
