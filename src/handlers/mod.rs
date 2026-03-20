@@ -82,12 +82,13 @@ mod header_name {
 /// # Examples
 ///
 /// ```rust,no_run
-/// use otd::{Handler, Config, types::AppState};
-/// use std::{sync::Arc, path::PathBuf};
+/// use otd::{Handler, types::AppState};
+/// use std::sync::Arc;
 ///
-/// let config = Config::default().parse().unwrap();
 /// let state = Arc::new(AppState::new());
-/// let handler = Handler::new(state, config);
+/// # smol::block_on(async {
+/// let handler = Handler::new(state).await;
+/// # });
 /// ```
 pub struct Handler {
     /// Shared application state containing download tokens and configuration
@@ -174,12 +175,11 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, Config, types::AppState};
-    /// # use std::{sync::Arc, path::PathBuf};
-    /// # let config = Config::default().parse().unwrap();
-    /// # let state = Arc::new(AppState::new());
-    /// # let handler = Handler::new(state, config);
+    /// # use otd::{Handler, types::AppState};
+    /// # use std::sync::Arc;
     /// # smol::block_on(async {
+    /// # let state = Arc::new(AppState::new());
+    /// # let handler = Handler::new(state).await;
     /// let request = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
     /// let peer_addr: std::net::SocketAddr = "127.0.0.1:12345".parse().unwrap();
     /// let response = handler.handle_admin_request(request, peer_addr).await.unwrap();
@@ -247,12 +247,11 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, Config, types::AppState};
-    /// # use std::{sync::Arc, path::PathBuf};
-    /// # let config = Config::default().parse().unwrap();
-    /// # let state = Arc::new(AppState::new());
-    /// # let handler = Handler::new(state, config);
+    /// # use otd::{Handler, types::AppState};
+    /// # use std::sync::Arc;
     /// # smol::block_on(async {
+    /// # let state = Arc::new(AppState::new());
+    /// # let handler = Handler::new(state).await;
     /// let request = "GET /document.pdf?k=550e8400-e29b-41d4-a716-446655440000 HTTP/1.1\r\n\r\n";
     /// let peer_addr: std::net::SocketAddr = "192.168.1.10:54321".parse().unwrap();
     /// let response = handler.handle_download_request(request, peer_addr).await.unwrap();
@@ -567,12 +566,11 @@ impl Handler {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// # use otd::{Handler, Config, types::AppState};
-    /// # use std::{sync::Arc, path::PathBuf};
-    /// # let config = Config::default().parse().unwrap();
-    /// # let state = Arc::new(AppState::new());
-    /// # let handler = Handler::new(state, config);
+    /// # use otd::{Handler, types::AppState};
+    /// # use std::sync::Arc;
     /// # smol::block_on(async {
+    /// # let state = Arc::new(AppState::new());
+    /// # let handler = Handler::new(state).await;
     /// // Safe path - returns Some(canonical_path)
     /// let ok = handler.safe_join("subdir/file.txt").await;
     /// // Traversal - returns None
