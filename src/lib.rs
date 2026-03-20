@@ -38,15 +38,15 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use otd::{Config, Server};
+//! use otd::Server;
 //! use smol_macros::main;
 //! use macro_rules_attribute::apply;
 //!
 //! #[apply(main!)]
 //! async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//!     let (config, config_path) = Config::load()?;
-//!     let server = Server::new_with_path(config, config_path)?;
-//!     server.run().await
+//!     let server = Server::new().await;
+//!     server.run().await?;
+//!     Ok(())
 //! }
 //! ```
 //!

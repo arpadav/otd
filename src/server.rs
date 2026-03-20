@@ -82,15 +82,15 @@ where
 /// # Examples
 ///
 /// ```rust,no_run
-/// use otd::{Server, Config};
+/// use otd::Server;
 /// use smol_macros::main;
 /// use macro_rules_attribute::apply;
 ///
 /// #[apply(main!)]
 /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-///     let (config, config_path) = Config::load()?;
-///     let server = Server::new_with_path(config, config_path)?;
-///     server.run().await
+///     let server = Server::new().await;
+///     server.run().await?;
+///     Ok(())
 /// }
 /// ```
 pub struct Server {
@@ -111,9 +111,9 @@ impl Server {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use otd::Server;
-    /// let server = smol::block_on(Server::new()).unwrap();
+    /// let server = smol::block_on(Server::new());
     /// ```
     pub async fn new() -> Self {
         Self::init().await
@@ -187,15 +187,15 @@ impl Server {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use otd::{Server, Config};
+    /// use otd::Server;
     /// use smol_macros::main;
     /// use macro_rules_attribute::apply;
     ///
     /// #[apply(main!)]
     /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    ///     let (config, config_path) = Config::load()?;
-    ///     let server = Server::new_with_path(config, config_path)?;
-    ///     server.run().await
+    ///     let server = Server::new().await;
+    ///     server.run().await?;
+    ///     Ok(())
     /// }
     /// ```
     pub async fn run(self) -> std::io::Result<()> {

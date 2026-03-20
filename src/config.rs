@@ -343,6 +343,7 @@ impl Config {
     }
 
     #[inline(always)]
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Resolves a [`Config`] into a [`ParsedConfig`] by pre-computing
     /// socket addresses and the download base URL.
     ///
@@ -353,8 +354,9 @@ impl Config {
     ///
     /// ```rust
     /// use otd::Config;
+    /// use std::path::PathBuf;
     ///
-    /// let parsed = Config::default().parse().unwrap();
+    /// let parsed = Config::default().parse(Default::default());
     /// assert_eq!(parsed.admin_addr.port(), 15204);
     /// ```
     pub(crate) fn parse(self, path: PathBuf) -> ParsedConfig {
@@ -378,9 +380,10 @@ impl Config {
 /// # Examples
 ///
 /// ```rust
-/// use otd::config::{Config, ParsedConfig};
+/// use otd::Config;
+/// use std::path::PathBuf;
 ///
-/// let parsed = Config::default().parse().unwrap();
+/// let parsed = Config::default().parse(Default::default());
 /// assert_eq!(parsed.admin_addr.port(), 15204);
 /// assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
 /// ```
@@ -432,6 +435,7 @@ impl From<Config> for ParsedConfig {
 /// [`ParsedConfig`] implementation
 impl ParsedConfig {
     #[inline(always)]
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Returns the socket address for the admin interface.
     ///
     /// Combines the admin host and port into a `SocketAddr` for binding.
@@ -440,9 +444,10 @@ impl ParsedConfig {
     ///
     /// ```rust
     /// use otd::Config;
+    /// use otd::config::ParsedConfig;
     ///
     /// let config = Config::default();
-    /// let addr = config.admin_addr().unwrap();
+    /// let addr = ParsedConfig::admin_addr(&config).unwrap();
     /// assert_eq!(addr.port(), 15204);
     /// ```
     fn admin_addr(cfg: &Config) -> Result<SocketAddr, std::net::AddrParseError> {
@@ -450,6 +455,7 @@ impl ParsedConfig {
     }
 
     #[inline(always)]
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Returns the socket address for the download server.
     ///
     /// Combines the download host and port into a `SocketAddr` for binding.
@@ -458,15 +464,17 @@ impl ParsedConfig {
     ///
     /// ```rust
     /// use otd::Config;
+    /// use otd::config::ParsedConfig;
     ///
     /// let config = Config::default();
-    /// let addr = config.download_addr().unwrap();
+    /// let addr = ParsedConfig::download_addr(&config).unwrap();
     /// assert_eq!(addr.port(), 15205);
     /// ```
     fn download_addr(cfg: &Config) -> Result<SocketAddr, std::net::AddrParseError> {
         format!("{}:{}", cfg.download_host, cfg.download_port).parse()
     }
 
+    #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
     /// Returns the base URL for download links.
     ///
     /// Constructs the complete base URL including protocol, host, and port
@@ -476,9 +484,10 @@ impl ParsedConfig {
     ///
     /// ```rust
     /// use otd::Config;
+    /// use otd::config::ParsedConfig;
     ///
     /// let config = Config::default();
-    /// let base_url = config.download_base_url();
+    /// let base_url = ParsedConfig::download_base_url(&config);
     /// assert_eq!(base_url, "http://0.0.0.0:15205");
     /// ```
     fn download_base_url(cfg: &Config) -> String {
