@@ -308,7 +308,7 @@ impl Server {
                             .load(std::sync::atomic::Ordering::Relaxed);
                         let is_expired = item.expires_at.is_some_and(|e| now >= e);
                         let is_used = count >= item.max_downloads;
-                        is_expired || is_used
+                        (is_expired || is_used) && item.can_remove_cache()
                     })
                     .filter_map(|item| item.cache_path())
                     .filter(|p| p.exists())

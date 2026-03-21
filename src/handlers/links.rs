@@ -98,6 +98,7 @@ impl super::Handler {
             created_at: std::time::Instant::now(),
             compression,
             archive_state,
+            active_serving: std::sync::atomic::AtomicU32::new(0),
         };
         self.state.tokens.write().await.insert(token.clone(), item);
         self.state.mark_dirty();
@@ -204,12 +205,14 @@ impl super::Handler {
                 "all" => false,
                 _ => true,
             };
-            if !keep && let Some(path) = item.cache_path() {
+            if !keep
+                && item.can_remove_cache()
+                && let Some(path) = item.cache_path()
+            {
                 cache_paths.push(path);
             }
             keep
         });
-
         let removed = before - tokens.len();
         if removed > 0 {
             self.state.mark_dirty();
