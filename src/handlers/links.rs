@@ -10,6 +10,8 @@ use crate::{http::*, types::*};
 // --------------------------------------------------
 // external
 // --------------------------------------------------
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 use std::sync::{Arc, atomic::Ordering};
 use uuid::Uuid;
 
@@ -96,6 +98,7 @@ impl super::Handler {
             created_at: std::time::Instant::now(),
             compression,
             archive_state,
+            active_serving: std::sync::atomic::AtomicU32::new(0),
         };
         self.state.tokens.write().await.insert(token.clone(), item);
         self.state.mark_dirty();
@@ -174,6 +177,8 @@ impl super::Handler {
     }
 
     /// Deletes tokens matching a filter: "used", "expired", or "all".
+    ///
+    /// Also removes archive cache files for deleted tokens.
     pub(crate) async fn bulk_delete_tokens(
         &self,
         body: &str,
@@ -188,25 +193,47 @@ impl super::Handler {
         let before = tokens.len();
         let now = std::time::Instant::now();
 
+        // Collect cache paths of items that will be removed
+        let mut cache_paths: Vec<std::path::PathBuf> = Vec::new();
         tokens.retain(|_, item| {
             let count = item.download_count.load(Ordering::Relaxed);
             let is_expired = item.expires_at.is_some_and(|e| now >= e);
             let is_used = count >= item.max_downloads;
-            match req.filter.as_str() {
+            let keep = match req.filter.as_str() {
                 "used" => !is_used,
                 "expired" => !is_expired,
                 "all" => false,
                 _ => true,
+            };
+            if !keep
+                && item.can_remove_cache()
+                && let Some(path) = item.cache_path()
+            {
+                cache_paths.push(path);
             }
+            keep
         });
-
         let removed = before - tokens.len();
         if removed > 0 {
             self.state.mark_dirty();
         }
+        drop(tokens);
+
+        // --------------------------------------------------
+        // clean up cache files outside the lock
+        // --------------------------------------------------
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "rayon")] {
+                cache_paths.par_iter().for_each(super::remove_cache_file);
+            } else {
+                cache_paths.iter().for_each(super::remove_cache_file);
+            }
+        }
+        // --------------------------------------------------
+        // respond with bulk deleted
+        // --------------------------------------------------
         let filter = &req.filter;
         tracing::info!("Bulk delete (filter={filter}): removed {removed} tokens");
-
         HttpResponse::ok()
             .body_json(&BulkDeleteResponse { removed })
             .map_err(Into::into)
@@ -217,34 +244,46 @@ impl super::Handler {
         &self,
         token: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        // --------------------------------------------------
+        // get token and check it exists
+        // --------------------------------------------------
         let tokens = self.state.tokens.read().await;
         let item = match tokens.get(token) {
             Some(item) => item,
             None => return Ok(HttpResponse::not_found()),
         };
-
+        // --------------------------------------------------
         // check source files exist
-        if !item.paths.iter().all(|p| p.exists()) {
+        // --------------------------------------------------
+        cfg_if::cfg_if! {
+            if #[cfg(not(feature = "rayon"))] {
+                let still_exists = !item.paths.iter().all(|p| p.exists());
+            } else {
+                let still_exists = !item.paths.par_iter().all(|p| p.exists());
+            }
+        };
+        if still_exists {
             return Ok(HttpResponse::bad_request()
                 .body_text("Cannot revive: source file(s) no longer exist"));
         }
-
+        // --------------------------------------------------
         // re-trigger archive creation
+        // --------------------------------------------------
         let mut archive = item.archive_state.write().await;
         *archive = ArchiveState::Preparing;
         drop(archive);
-
         let paths = item.paths.clone();
         let compression = item.compression;
         drop(tokens);
-
         super::Handler::spawn_archive_creation(
             Arc::clone(&self.state),
             token.to_string(),
             paths,
             compression,
         );
-
+        // --------------------------------------------------
+        // return success
+        // --------------------------------------------------
         tracing::info!("Reviving archive for token: {token}");
         Ok(HttpResponse::ok().body_text("Archive recreation started"))
     }
@@ -267,22 +306,21 @@ impl super::Handler {
             .map_err(Into::into)
     }
 
-    /// Deletes a download token.
+    /// Deletes a download token and its archive cache file.
     pub(crate) async fn delete_token(
         &self,
         token: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let mut tokens = self.state.tokens.write().await;
-        if tokens.remove(token).is_some() {
+        let removed = tokens.remove(token).inspect(|item| {
+            item.remove_cache_file();
             self.state.mark_dirty();
             tracing::info!("Deleted token: {token}");
-            HttpResponse::ok()
-                .body_json(&BulkDeleteResponse { removed: 1 })
-                .map_err(Into::into)
-        } else {
-            HttpResponse::ok()
-                .body_json(&BulkDeleteResponse { removed: 0 })
-                .map_err(Into::into)
-        }
+        });
+        HttpResponse::ok()
+            .body_json(&BulkDeleteResponse {
+                removed: removed.is_some() as usize,
+            })
+            .map_err(Into::into)
     }
 }

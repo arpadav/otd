@@ -507,7 +507,8 @@ impl super::Handler {
         }
         // --------------------------------------------------
         // build the response - download count is tentatively
-        // incremented
+        // incremented. active_serving guards the cache file
+        // from deletion while the file read is in progress.
         // --------------------------------------------------
         let response = if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
             // --------------------------------------------------
@@ -536,13 +537,17 @@ impl super::Handler {
                     tracing::info!(
                         "Download from {peer_addr}: serving archive '{name}' for {token}"
                     );
-                    self.serve_cached_archive(cache_path, &name, compression)
+                    item.active_serving.fetch_add(1, Ordering::AcqRel);
+                    let result = self
+                        .serve_cached_archive(cache_path, &name, compression)
                         .await
                         .map_err(|e| {
                             tracing::error!("Failed to serve archive for {token}: {e}");
                             HttpResponse::internal_server_error()
                                 .body_text("Failed to serve archive")
-                        })
+                        });
+                    item.active_serving.fetch_sub(1, Ordering::AcqRel);
+                    result
                 }
                 // --------------------------------------------------
                 // failed to create the archive
@@ -552,13 +557,19 @@ impl super::Handler {
                 // --------------------------------------------------
                 // fallback: should not happen
                 // --------------------------------------------------
-                ArchiveState::NotNeeded => self
-                    .serve_as_archive(&item.paths, &name, compression)
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("Failed to serve archive for {token}: {e}");
-                        HttpResponse::internal_server_error().body_text("Failed to serve archive")
-                    }),
+                ArchiveState::NotNeeded => {
+                    item.active_serving.fetch_add(1, Ordering::AcqRel);
+                    let result = self
+                        .serve_as_archive(&item.paths, &name, compression)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to serve archive for {token}: {e}");
+                            HttpResponse::internal_server_error()
+                                .body_text("Failed to serve archive")
+                        });
+                    item.active_serving.fetch_sub(1, Ordering::AcqRel);
+                    result
+                }
             }
         } else {
             // --------------------------------------------------
@@ -566,10 +577,13 @@ impl super::Handler {
             // --------------------------------------------------
             let name = &item.name;
             tracing::info!("Download from {peer_addr}: serving '{name}' for {token}");
-            self.serve_single_file(&item.paths[0]).await.map_err(|e| {
+            item.active_serving.fetch_add(1, Ordering::AcqRel);
+            let result = self.serve_single_file(&item.paths[0]).await.map_err(|e| {
                 tracing::error!("Failed to serve file for {token}: {e}");
                 HttpResponse::internal_server_error().body_text("Failed to serve file")
-            })
+            });
+            item.active_serving.fetch_sub(1, Ordering::AcqRel);
+            result
         };
         // --------------------------------------------------
         // check response - this affects the download count

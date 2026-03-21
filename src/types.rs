@@ -7,6 +7,8 @@
 // --------------------------------------------------
 // external
 // --------------------------------------------------
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use smol::lock::RwLock;
 use std::{collections::HashMap, path::PathBuf, sync::atomic::AtomicU32};
@@ -54,6 +56,51 @@ pub(crate) struct DownloadItem {
     pub(crate) compression: crate::handlers::download::CompressionType,
     /// Archive preparation state (interior-mutable; never held across .await)
     pub(crate) archive_state: smol::lock::RwLock<ArchiveState>,
+    /// Number of downloads currently being served (file read in progress).
+    /// Cache files must not be deleted while this is > 0.
+    pub(crate) active_serving: AtomicU32,
+}
+/// [`DownloadItem`] implementation
+impl DownloadItem {
+    #[inline(always)]
+    /// Returns the archive cache path if the archive state is [`ArchiveState::Ready`].
+    ///
+    /// Uses a non-blocking `try_read` so it never stalls callers.
+    pub(crate) fn cache_path(&self) -> Option<PathBuf> {
+        self.archive_state.try_read().and_then(|s| match &*s {
+            ArchiveState::Ready(p) => Some(p.clone()),
+            _ => None,
+        })
+    }
+
+    #[inline(always)]
+    /// Whether it is safe to remove this item's cache file right now.
+    ///
+    /// Returns `false` if any download is actively being served (file read
+    /// in progress), since deleting the cache mid-read would cause the
+    /// download to fail.
+    pub(crate) fn can_remove_cache(&self) -> bool {
+        self.active_serving
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+    }
+
+    /// Removes the archive cache file from disk if no download is in progress.
+    ///
+    /// # Returns
+    ///
+    /// * `true` if the file was removed or didn't exist.
+    /// * `false` if skipped because a download is in progress.
+    pub(crate) fn remove_cache_file(&self) -> bool {
+        if !self.can_remove_cache() {
+            tracing::debug!("Skipping cache removal: download in progress");
+            return false;
+        }
+        self.cache_path()
+            .as_ref()
+            .map(crate::handlers::remove_cache_file);
+        true
+    }
 }
 /// [`DownloadItem`] implementation of [`From`] for [`PersistedDownloadItem`]
 impl From<PersistedDownloadItem> for DownloadItem {
@@ -90,6 +137,7 @@ impl From<PersistedDownloadItem> for DownloadItem {
             created_at,
             compression: item.compression,
             archive_state,
+            active_serving: AtomicU32::new(0),
         }
     }
 }
@@ -526,6 +574,21 @@ impl AppState {
     pub(crate) async fn clear_links(&self, dir: &std::path::Path) -> usize {
         let mut tokens = self.tokens.write().await;
         let count = tokens.len();
+        // --------------------------------------------------
+        // remove archive cache files for all tokens
+        // --------------------------------------------------
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "rayon")] {
+                tokens
+                    .par_iter()
+                    .map(|(_, v)| v)
+                    .for_each(|item| { item.remove_cache_file(); });
+            } else {
+                tokens
+                    .values()
+                    .for_each(|item| { item.remove_cache_file(); });
+            }
+        }
         tokens.clear();
         drop(tokens);
         let links_dir = dir.join(LINKS_DIR);
@@ -557,6 +620,7 @@ mod tests {
             created_at: std::time::Instant::now(),
             compression: crate::handlers::download::CompressionType::Zip,
             archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+            active_serving: AtomicU32::new(0),
         };
 
         assert_eq!(item.paths.len(), 1);
@@ -578,6 +642,7 @@ mod tests {
             created_at: std::time::Instant::now() - std::time::Duration::from_secs(30),
             compression: crate::handlers::download::CompressionType::TarGz,
             archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+            active_serving: AtomicU32::new(0),
         };
 
         let now = std::time::Instant::now();
@@ -616,6 +681,7 @@ mod tests {
                     created_at: std::time::Instant::now(),
                     compression: crate::handlers::download::CompressionType::Zip,
                     archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                    active_serving: AtomicU32::new(0),
                 },
             );
         });
@@ -649,6 +715,7 @@ mod tests {
                     created_at: std::time::Instant::now(),
                     compression: crate::handlers::download::CompressionType::Zip,
                     archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                    active_serving: AtomicU32::new(0),
                 },
             );
             // Active token
@@ -664,6 +731,7 @@ mod tests {
                     created_at: std::time::Instant::now(),
                     compression: crate::handlers::download::CompressionType::Zip,
                     archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                    active_serving: AtomicU32::new(0),
                 },
             );
         });
@@ -695,6 +763,7 @@ mod tests {
                     created_at: std::time::Instant::now(),
                     compression: crate::handlers::download::CompressionType::Zip,
                     archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                    active_serving: AtomicU32::new(0),
                 },
             );
         });
@@ -729,6 +798,7 @@ mod tests {
                     created_at: std::time::Instant::now(),
                     compression: crate::handlers::download::CompressionType::Zip,
                     archive_state: smol::lock::RwLock::new(ArchiveState::NotNeeded),
+                    active_serving: AtomicU32::new(0),
                 },
             );
         });

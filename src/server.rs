@@ -6,12 +6,20 @@
 //!
 //! Author: aav
 // --------------------------------------------------
-// external
+// local
 // --------------------------------------------------
 use crate::{
-    config::CONFIG, handlers::Handler, handlers::download::ARCHIVE_CACHE_DIR, prelude::*,
+    config::CONFIG,
+    handlers::{self, Handler, download::ARCHIVE_CACHE_DIR},
+    prelude::*,
     types::AppState,
 };
+
+// --------------------------------------------------
+// external
+// --------------------------------------------------
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 use smol::{io::AsyncReadExt, io::AsyncWriteExt, net::TcpListener};
 use std::sync::Arc;
 
@@ -270,29 +278,40 @@ impl Server {
                 smol::Timer::after(HEALTH_CHECK_INTERVAL).await;
                 smol::future::yield_now().await;
                 // --------------------------------------------------
-                // single read lock: find stale entries, then update
+                // single read lock: find stale entries + expired/used
                 // archive_state has its own lock so no conflict
                 // --------------------------------------------------
                 let tokens = state_for_health.tokens.read().await;
+                let now = std::time::Instant::now();
+                // --------------------------------------------------
+                // find archives whose cache file was externally deleted
+                // --------------------------------------------------
                 let stale: Vec<_> = tokens
                     .iter()
-                    // --------------------------------------------------
-                    // only consider items that produce an archive
-                    // (multi-file or a single directory path)
-                    // --------------------------------------------------
                     .filter(|(_, item)| {
                         item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir())
                     })
-                    // --------------------------------------------------
-                    // try to acquire a non-blocking read lock on the
-                    // archive state - skip if currently locked.
-                    // only flag if archive was Ready but file is gone
-                    // --------------------------------------------------
                     .filter(|(_, item)| {
                         item.archive_state
                             .try_read()
                             .is_some_and(|s| matches!(&*s, ArchiveState::Ready(p) if !p.exists()))
                     })
+                    .collect();
+                // --------------------------------------------------
+                // find expired/used tokens that still have a cache file
+                // --------------------------------------------------
+                let to_clean: Vec<std::path::PathBuf> = tokens
+                    .values()
+                    .filter(|item| {
+                        let count = item
+                            .download_count
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        let is_expired = item.expires_at.is_some_and(|e| now >= e);
+                        let is_used = count >= item.max_downloads;
+                        (is_expired || is_used) && item.can_remove_cache()
+                    })
+                    .filter_map(|item| item.cache_path())
+                    .filter(|p| p.exists())
                     .collect();
                 // --------------------------------------------------
                 // write-lock each stale archive individually
@@ -306,6 +325,16 @@ impl Server {
                     }
                 }
                 drop(tokens);
+                // --------------------------------------------------
+                // clean up cache files
+                // --------------------------------------------------
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "rayon")] {
+                        to_clean.par_iter().for_each(handlers::remove_cache_file);
+                    } else {
+                        to_clean.iter().for_each(handlers::remove_cache_file);
+                    }
+                }
                 smol::future::yield_now().await;
             }
         })
