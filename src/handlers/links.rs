@@ -1,13 +1,21 @@
 //! Download link generation and token management.
 //!
 //! Author: aav
+// --------------------------------------------------
+// local
+// --------------------------------------------------
 use super::download::{DEFAULT_DIR_NAME, DEFAULT_DOWNLOAD_NAME};
 use crate::{http::*, types::*};
 
+// --------------------------------------------------
+// external
+// --------------------------------------------------
 use std::sync::{Arc, atomic::Ordering};
 use uuid::Uuid;
 
-/// Link management methods for [`super::Handler`].
+/// [`super::Handler`] implementation
+///
+/// Link Management
 impl super::Handler {
     /// Generates a new download link for the specified files.
     ///
@@ -18,15 +26,14 @@ impl super::Handler {
         body: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let generate_req: GenerateRequest = serde_json::from_str(body)?;
-
         if generate_req.paths.is_empty() {
             return Ok(HttpResponse::bad_request().body_text("No paths provided"));
         }
-
-        let mut full_paths = Vec::new();
-
-        // Validate all paths - safe_join canonicalizes and checks containment,
+        // --------------------------------------------------
+        // validate all paths - safe_join canonicalizes and checks containment,
         // blocking both `../` traversal and symlink-based escapes.
+        // --------------------------------------------------
+        let mut full_paths = Vec::new();
         for path_str in &generate_req.paths {
             match self.safe_join(path_str).await {
                 Some(full_path) => full_paths.push(full_path),
@@ -38,15 +45,14 @@ impl super::Handler {
                 }
             }
         }
-
         let token = Uuid::new_v4().to_string();
         let is_multi_file =
             full_paths.len() > 1 || (full_paths.len() == 1 && full_paths[0].is_dir());
-
         let compression = generate_req.format;
         let ext = compression.extension();
-
-        // Determine the name
+        // --------------------------------------------------
+        // determine the name
+        // --------------------------------------------------
         let name = if let Some(custom_name) = generate_req.name {
             custom_name
         } else if full_paths.len() == 1 {
@@ -68,18 +74,18 @@ impl super::Handler {
         } else {
             format!("output{ext}")
         };
-
         let max_downloads = generate_req.max_downloads.unwrap_or(1).max(1);
         let expires_at = generate_req
             .expires_in_seconds
             .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
-
-        let archive_state = if is_multi_file {
-            smol::lock::RwLock::new(ArchiveState::Preparing)
+        let archive_state = smol::lock::RwLock::new(if is_multi_file {
+            ArchiveState::Preparing
         } else {
-            smol::lock::RwLock::new(ArchiveState::NotNeeded)
-        };
-
+            ArchiveState::NotNeeded
+        });
+        // --------------------------------------------------
+        // accumulate properties into a DownloadItem
+        // --------------------------------------------------
         let item = DownloadItem {
             paths: full_paths.clone(),
             is_multi_file,
@@ -91,11 +97,11 @@ impl super::Handler {
             compression,
             archive_state,
         };
-
         self.state.tokens.write().await.insert(token.clone(), item);
         self.state.mark_dirty();
-
-        // Spawn background archive creation for multi-file downloads
+        // --------------------------------------------------
+        // spawn background archive creation for multi-file downloads
+        // --------------------------------------------------
         if is_multi_file {
             super::Handler::spawn_archive_creation(
                 Arc::clone(&self.state),
@@ -104,15 +110,18 @@ impl super::Handler {
                 compression,
             );
         }
-
-        // Create URL with filename for better wget/browser behavior
+        // --------------------------------------------------
+        // create URL with filename for better wget/browser behavior
+        // --------------------------------------------------
         let download_url = self.download_url(&name, &token).await;
         tracing::info!("Generated download link for '{name}': {token}");
         let response = GenerateResponse {
             token,
             download_url,
         };
-
+        // --------------------------------------------------
+        // return response with ok, err if json serialization fails
+        // --------------------------------------------------
         HttpResponse::ok().body_json(&response).map_err(Into::into)
     }
 
@@ -122,19 +131,15 @@ impl super::Handler {
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let tokens = self.state.tokens.read().await;
         let mut items = Vec::with_capacity(tokens.len());
-
         let now = std::time::Instant::now();
         for (token, item) in tokens.iter() {
             let download_url = self.download_url(&item.name, token).await;
             let count = item.download_count.load(Ordering::Relaxed);
             let expired = item.expires_at.map(|e| now >= e).unwrap_or(false);
-            let expires_in_seconds = item.expires_at.and_then(|e| {
-                if now < e {
-                    Some(e.duration_since(now).as_secs())
-                } else {
-                    None
-                }
-            });
+            let expires_in_seconds = item
+                .expires_at
+                .filter(|&e| now < e)
+                .map(|e| e.duration_since(now).as_secs());
             let archive_status = {
                 let state = item.archive_state.read().await;
                 match &*state {
@@ -144,6 +149,7 @@ impl super::Handler {
                     ArchiveState::Failed(_) => "failed",
                 }
             };
+            let source_exists = item.paths.iter().all(|p| p.exists());
             items.push(TokenListItem {
                 token: token.clone(),
                 name: item.name.clone(),
@@ -160,6 +166,7 @@ impl super::Handler {
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect(),
                 archive_status: archive_status.to_string(),
+                source_exists,
             });
         }
 
@@ -202,6 +209,61 @@ impl super::Handler {
 
         HttpResponse::ok()
             .body_json(&BulkDeleteResponse { removed })
+            .map_err(Into::into)
+    }
+
+    /// Re-creates the archive cache for a token whose archive was deleted.
+    pub(crate) async fn revive_token(
+        &self,
+        token: &str,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let tokens = self.state.tokens.read().await;
+        let item = match tokens.get(token) {
+            Some(item) => item,
+            None => return Ok(HttpResponse::not_found()),
+        };
+
+        // check source files exist
+        if !item.paths.iter().all(|p| p.exists()) {
+            return Ok(HttpResponse::bad_request()
+                .body_text("Cannot revive: source file(s) no longer exist"));
+        }
+
+        // re-trigger archive creation
+        let mut archive = item.archive_state.write().await;
+        *archive = ArchiveState::Preparing;
+        drop(archive);
+
+        let paths = item.paths.clone();
+        let compression = item.compression;
+        drop(tokens);
+
+        super::Handler::spawn_archive_creation(
+            Arc::clone(&self.state),
+            token.to_string(),
+            paths,
+            compression,
+        );
+
+        tracing::info!("Reviving archive for token: {token}");
+        Ok(HttpResponse::ok().body_text("Archive recreation started"))
+    }
+
+    /// Clears all tokens and their persisted link files.
+    pub(crate) async fn clear_cache(
+        &self,
+    ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let data_dir = crate::config::data_dir();
+        let removed = self.state.clear_links(&data_dir).await;
+        tracing::info!("Clear cache: removed {removed} tokens");
+
+        #[derive(serde::Serialize)]
+        struct ClearResponse {
+            removed: usize,
+        }
+
+        HttpResponse::ok()
+            .body_json(&ClearResponse { removed })
             .map_err(Into::into)
     }
 

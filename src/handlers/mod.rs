@@ -61,6 +61,8 @@ mod route {
     pub const API_GENERATE: &str = "/api/generate";
     pub const API_TOKENS_BULK_DELETE: &str = "/api/tokens/bulk-delete";
     pub const API_TOKENS_PREFIX: &str = "/api/tokens/";
+    pub const API_CLEAR_CACHE: &str = "/api/clear-cache";
+    pub const API_TOKENS_REVIVE_SUFFIX: &str = "/revive";
     pub const LOGO: &str = "/logo.svg";
 }
 /// HTTP header name constants
@@ -490,6 +492,17 @@ impl Handler {
             (method::POST, route::API_TOKENS_BULK_DELETE) => {
                 let body = helpers::extract_body(request)?;
                 self.bulk_delete_tokens(&body).await
+            }
+            (method::POST, route::API_CLEAR_CACHE) => self.clear_cache().await,
+            (method::POST, path)
+                if path.starts_with(route::API_TOKENS_PREFIX)
+                    && path.ends_with(route::API_TOKENS_REVIVE_SUFFIX) =>
+            {
+                let token = path
+                    .strip_prefix(route::API_TOKENS_PREFIX)
+                    .and_then(|s| s.strip_suffix(route::API_TOKENS_REVIVE_SUFFIX))
+                    .unwrap_or("");
+                self.revive_token(token).await
             }
             (method::DELETE, path) if path.starts_with(route::API_TOKENS_PREFIX) => {
                 let token = path.strip_prefix(route::API_TOKENS_PREFIX).unwrap_or("");
