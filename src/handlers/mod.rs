@@ -706,6 +706,17 @@ impl Clone for Handler {
     }
 }
 
+/// Helper function to remove a cache file, logging any errors that occur
+pub(crate) fn remove_cache_file(path: &std::path::PathBuf) {
+    match std::fs::remove_file(path) {
+        Ok(()) => tracing::debug!("Removed cache file {path:?}"),
+        Err(e) if path.exists() => {
+            tracing::warn!("Failed to remove cache file {path:?}: {e}")
+        }
+        _ => (),
+    }
+}
+
 #[cfg_attr(feature = "doc-tests", visibility::make(pub))]
 /// Helper functions, mainly for URL and request handling, used
 /// by [`Handler`]
