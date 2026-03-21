@@ -792,6 +792,22 @@
                         <div class="flex items-center justify-between">
                             <div>
                                 <p class="text-sm text-text font-medium">
+                                    Clear Link Cache
+                                </p>
+                                <p class="text-xs text-text-muted">
+                                    Permanently delete all link files from disk and clear all tokens from memory
+                                </p>
+                            </div>
+                            <button
+                                onclick="confirmClearCache()"
+                                class="px-4 py-2 text-xs font-medium rounded-lg border border-danger/30 text-danger hover:bg-danger-bg transition-colors"
+                            >
+                                Clear Cache
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm text-text font-medium">
                                     Logout
                                 </p>
                                 <p class="text-xs text-text-muted">
@@ -1393,15 +1409,21 @@
                     const isFailed = t.archive_status === "failed";
                     const isDone = isExpired || isUsed;
 
-                    // Status badge
+                    const sourceExists = t.source_exists !== false;
+
+                    // Status badge + optional revive button
                     let badge;
-                    if (isExpired)
+                    let reviveBtn = "";
+                    if (!sourceExists)
+                        badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500">Source Missing</span>`;
+                    else if (isExpired)
                         badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-danger-bg text-red-700 dark:text-red-300">Expired</span>`;
                     else if (isUsed)
                         badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-danger-bg text-red-700 dark:text-red-300">Used</span>`;
-                    else if (isFailed)
+                    else if (isFailed) {
                         badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-danger-bg text-red-700 dark:text-red-300">Failed</span>`;
-                    else if (isPreparing)
+                        reviveBtn = `<button data-token="${escapeHtml(t.token)}" class="revive-token-btn text-xs px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 hover:bg-amber-200 transition-colors">Revive</button>`;
+                    } else if (isPreparing)
                         badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">Preparing</span>`;
                     else
                         badge = `<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-success-bg text-emerald-700 dark:text-emerald-300">Active</span>`;
@@ -1419,18 +1441,21 @@
                         countdown = `<span class="text-xs text-text-muted" data-countdown="${t.expires_in_seconds}">expires in ${formatDuration(t.expires_in_seconds)}</span>`;
                     }
 
-                    // Border color: amber while preparing
-                    const borderClass = isPreparing
-                        ? "border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10"
-                        : isDone
-                          ? "border-border bg-surface-alt/50"
-                          : "border-accent/20 bg-accent/5";
+                    // Border color: grey for source missing, amber while preparing
+                    const borderClass = !sourceExists
+                        ? "border-gray-300 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/10 opacity-60"
+                        : isPreparing
+                          ? "border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10"
+                          : isDone
+                            ? "border-border bg-surface-alt/50"
+                            : "border-accent/20 bg-accent/5";
 
                     html += `<div class="rounded-lg border ${borderClass} p-3 space-y-2 group">
 																				<div class="flex items-center justify-between">
 																				<span class="text-sm font-semibold ${isDone ? "text-text-muted line-through" : "text-text"} truncate">${escapeHtml(t.name)}</span>
 																				<div class="flex items-center gap-2">
 																				${badge}
+																				${reviveBtn}
 																				<button data-token="${escapeHtml(t.token)}" class="delete-token-btn opacity-0 group-hover:opacity-100 text-text-muted hover:text-danger transition-all p-1 rounded hover:bg-danger-bg" title="Delete">
 																				<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/></svg>
 																				</button>
@@ -1448,7 +1473,7 @@
                                                                                     isPreparing
                                                                                         ? `<div class="text-xs text-amber-600 dark:text-amber-400 px-2.5 py-1.5 flex items-center gap-1.5">
 																				<svg class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-																				Zip file is being prepared...
+																				Archive is being prepared...
 																				</div>`
                                                                                         : `<div class="font-mono text-xs bg-brand/5 dark:bg-white/5 rounded px-2.5 py-1.5 break-all text-text-muted select-all">${escapeHtml(t.download_url || "N/A")}</div>`
                                                                                 }
@@ -1501,6 +1526,40 @@
                 try {
                     await fetch(`/api/tokens/${token}`, { method: "DELETE" });
                     toast("Token deleted");
+                    loadTokens();
+                    if (currentView === "dashboard") loadStats();
+                } catch (e) {
+                    toast("Error: " + e.message, "error");
+                }
+            }
+
+            async function reviveToken(token) {
+                try {
+                    await fetch(`/api/tokens/${token}/revive`, {
+                        method: "POST",
+                    });
+                    toast("Archive recreation started");
+                    loadTokens();
+                } catch (e) {
+                    toast("Error: " + e.message, "error");
+                }
+            }
+
+            async function confirmClearCache() {
+                if (
+                    !confirm(
+                        "This will permanently delete ALL link files and clear all tokens. This cannot be undone.",
+                    )
+                )
+                    return;
+                if (!confirm("Are you absolutely sure? All link history will be lost."))
+                    return;
+                try {
+                    const res = await fetch("/api/clear-cache", {
+                        method: "POST",
+                    });
+                    const data = await res.json();
+                    toast(`Cache cleared: removed ${data.removed} token(s)`);
                     loadTokens();
                     if (currentView === "dashboard") loadStats();
                 } catch (e) {
@@ -1615,6 +1674,11 @@
                         const copyBtn = e.target.closest(".copy-btn");
                         if (copyBtn) {
                             copyToClipboard(copyBtn.dataset.url);
+                            return;
+                        }
+                        const revBtn = e.target.closest(".revive-token-btn");
+                        if (revBtn) {
+                            reviveToken(revBtn.dataset.token);
                             return;
                         }
                         const delBtn = e.target.closest(".delete-token-btn");

@@ -227,7 +227,19 @@ impl CompressedFile {
     }
 
     /// Builds the archive in memory and returns the raw bytes
-    pub(crate) fn write_to_memory(&self) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use otd::handlers::download::{CompressedFile, CompressionType};
+    ///
+    /// let paths = vec![PathBuf::from("file1.txt"), PathBuf::from("dir1")];
+    /// let compressed = CompressedFile::new(paths, CompressionType::Zip);
+    /// let bytes = compressed.write_to_memory().unwrap();
+    /// ```
+    pub(crate) fn write_to_memory(
+        &self,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let mut buf = Vec::new();
         {
             let cursor = std::io::Cursor::new(&mut buf);
@@ -468,19 +480,36 @@ impl super::Handler {
         }
         // --------------------------------------------------
         // check download count against per-link max_downloads limit
+        // reserve a slot via compare-exchange (don't commit yet)
         // --------------------------------------------------
-        let prev = item.download_count.fetch_add(1, Ordering::AcqRel);
-        if prev >= item.max_downloads {
+        let mut current = item.download_count.load(Ordering::Acquire);
+        loop {
             // --------------------------------------------------
-            // undo the increment to avoid overflow over time
+            // early return on max downloads
             // --------------------------------------------------
-            item.download_count.fetch_sub(1, Ordering::AcqRel);
-            let max = item.max_downloads;
-            tracing::info!("Download from {peer_addr}: limit reached for {token} (max {max})");
-            return Ok(HttpResponse::gone().body_text("Download limit reached"));
+            if current >= item.max_downloads {
+                let max = item.max_downloads;
+                tracing::info!("Download from {peer_addr}: limit reached for {token} (max {max})");
+                return Ok(HttpResponse::gone().body_text("Download limit reached"));
+            }
+            // --------------------------------------------------
+            // atomically increment download count
+            // --------------------------------------------------
+            match item.download_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
         }
-        self.state.mark_dirty();
-        if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
+        // --------------------------------------------------
+        // build the response - download count is tentatively
+        // incremented
+        // --------------------------------------------------
+        let response = if item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir()) {
             // --------------------------------------------------
             // if multifile, then read the archive state and extract what
             // we need without holding the guard across .await
@@ -493,11 +522,10 @@ impl super::Handler {
                 // archive still being prepared
                 // --------------------------------------------------
                 ArchiveState::Preparing => {
-                    item.download_count.fetch_sub(1, Ordering::AcqRel);
                     tracing::debug!(
                         "Download from {peer_addr}: archive still preparing for {token}"
                     );
-                    Ok(HttpResponse::accepted()
+                    Err(HttpResponse::accepted()
                         .content_type(content_type::PLAIN_TEXT)
                         .body_text("File is being prepared, please try again shortly"))
                 }
@@ -510,18 +538,27 @@ impl super::Handler {
                     );
                     self.serve_cached_archive(cache_path, &name, compression)
                         .await
+                        .map_err(|e| {
+                            tracing::error!("Failed to serve archive for {token}: {e}");
+                            HttpResponse::internal_server_error()
+                                .body_text("Failed to serve archive")
+                        })
                 }
                 // --------------------------------------------------
                 // failed to create the archive
                 // --------------------------------------------------
-                ArchiveState::Failed(err) => Ok(HttpResponse::internal_server_error()
+                ArchiveState::Failed(err) => Err(HttpResponse::internal_server_error()
                     .body_text(&format!("Archive creation failed: {err}"))),
                 // --------------------------------------------------
                 // fallback: should not happen
                 // --------------------------------------------------
-                ArchiveState::NotNeeded => {
-                    self.serve_as_archive(&item.paths, &name, compression).await
-                }
+                ArchiveState::NotNeeded => self
+                    .serve_as_archive(&item.paths, &name, compression)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Failed to serve archive for {token}: {e}");
+                        HttpResponse::internal_server_error().body_text("Failed to serve archive")
+                    }),
             }
         } else {
             // --------------------------------------------------
@@ -529,7 +566,29 @@ impl super::Handler {
             // --------------------------------------------------
             let name = &item.name;
             tracing::info!("Download from {peer_addr}: serving '{name}' for {token}");
-            self.serve_single_file(&item.paths[0]).await
+            self.serve_single_file(&item.paths[0]).await.map_err(|e| {
+                tracing::error!("Failed to serve file for {token}: {e}");
+                HttpResponse::internal_server_error().body_text("Failed to serve file")
+            })
+        };
+        // --------------------------------------------------
+        // check response - this affects the download count
+        // --------------------------------------------------
+        match response {
+            Ok(resp) => {
+                // --------------------------------------------------
+                // success - count stays incremented, mark dirty
+                // --------------------------------------------------
+                self.state.mark_dirty();
+                Ok(resp)
+            }
+            Err(error_resp) => {
+                // --------------------------------------------------
+                // failed - undo the increment so it doesn't count
+                // --------------------------------------------------
+                item.download_count.fetch_sub(1, Ordering::AcqRel);
+                Ok(error_resp)
+            }
         }
     }
 

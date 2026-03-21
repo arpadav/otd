@@ -23,7 +23,9 @@ const READ_BUF_SIZE: usize = 4096;
 /// Maximum number of HTTP headers to parse.
 const MAX_PARSE_HEADERS: usize = 64;
 /// How often the background task checks the dirty flag and persists state.
-const STATE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const STATE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// How often the health check task runs to verify source files and archive caches.
+const HEALTH_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Reads a complete HTTP request from `stream`.
 ///
@@ -131,13 +133,25 @@ impl Server {
             Ok(tokens) => {
                 let count = tokens.len();
                 tracing::info!("Loaded {count} persisted tokens from {data_dir:?}");
-
-                // Re-trigger archive creation for multi-file tokens
+                // --------------------------------------------------
+                // re-trigger archive creation for files which are:
+                // - multi-file
+                // - active (not deleted, expired, or reached max downloads)
+                // --------------------------------------------------
                 let state = Arc::new(AppState::with_tokens(tokens));
                 let tokens_read = state.tokens.read().await;
                 tokens_read
                     .iter()
-                    .filter(|(_, item)| item.is_multi_file)
+                    .filter(|(_, item)| {
+                        item.is_multi_file
+                            && item
+                                .download_count
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                                < item.max_downloads
+                            && item
+                                .expires_at
+                                .is_some_and(|e| std::time::Instant::now() < e)
+                    })
                     .for_each(|(token, item)| {
                         Handler::spawn_archive_creation(
                             Arc::clone(&state),
@@ -218,13 +232,18 @@ impl Server {
                  Set `admin_token` in otd-config.toml and bind to a trusted interface."
             );
         }
-
-        // Spawn background state persistence task
+        // --------------------------------------------------
+        // spawn background state persistence task
+        // --------------------------------------------------
         let state_for_save = Arc::clone(&self.handler.state);
         smol::spawn(async move {
             let data_dir = crate::config::data_dir();
             loop {
+                // --------------------------------------------------
+                // wait for state save interval, then save if dirty
+                // --------------------------------------------------
                 smol::Timer::after(STATE_SAVE_INTERVAL).await;
+                smol::future::yield_now().await;
                 if state_for_save
                     .dirty
                     .swap(false, std::sync::atomic::Ordering::AcqRel)
@@ -235,6 +254,59 @@ impl Server {
                         tracing::debug!("State persisted to {data_dir:?}");
                     }
                 }
+            }
+        })
+        .detach();
+        // --------------------------------------------------
+        // spawn background health check task
+        // --------------------------------------------------
+        let state_for_health = Arc::clone(&self.handler.state);
+        smol::spawn(async move {
+            use crate::types::ArchiveState;
+            loop {
+                // --------------------------------------------------
+                // wait for health check interval, then check archives
+                // --------------------------------------------------
+                smol::Timer::after(HEALTH_CHECK_INTERVAL).await;
+                smol::future::yield_now().await;
+                // --------------------------------------------------
+                // single read lock: find stale entries, then update
+                // archive_state has its own lock so no conflict
+                // --------------------------------------------------
+                let tokens = state_for_health.tokens.read().await;
+                let stale: Vec<_> = tokens
+                    .iter()
+                    // --------------------------------------------------
+                    // only consider items that produce an archive
+                    // (multi-file or a single directory path)
+                    // --------------------------------------------------
+                    .filter(|(_, item)| {
+                        item.is_multi_file || (item.paths.len() == 1 && item.paths[0].is_dir())
+                    })
+                    // --------------------------------------------------
+                    // try to acquire a non-blocking read lock on the
+                    // archive state - skip if currently locked.
+                    // only flag if archive was Ready but file is gone
+                    // --------------------------------------------------
+                    .filter(|(_, item)| {
+                        item.archive_state
+                            .try_read()
+                            .is_some_and(|s| matches!(&*s, ArchiveState::Ready(p) if !p.exists()))
+                    })
+                    .collect();
+                // --------------------------------------------------
+                // write-lock each stale archive individually
+                // re-check because state may have changed since collect
+                // --------------------------------------------------
+                for (token, item) in stale {
+                    let mut archive = item.archive_state.write().await;
+                    if matches!(&*archive, ArchiveState::Ready(p) if !p.exists()) {
+                        *archive = ArchiveState::Failed("Archive cache deleted".into());
+                        tracing::info!("Marked stale archive for token {token}");
+                    }
+                }
+                drop(tokens);
+                smol::future::yield_now().await;
             }
         })
         .detach();
