@@ -57,10 +57,10 @@ mod route {
     pub const LOGOUT: &str = "/logout";
     pub const API_BROWSE: &str = "/api/browse";
     pub const API_STATS: &str = "/api/stats";
-    pub const API_TOKENS: &str = "/api/tokens";
+    pub const API_TOKENS: &str = "/api/links";
     pub const API_GENERATE: &str = "/api/generate";
-    pub const API_TOKENS_BULK_DELETE: &str = "/api/tokens/bulk-delete";
-    pub const API_TOKENS_PREFIX: &str = "/api/tokens/";
+    pub const API_TOKENS_BULK_DELETE: &str = "/api/links/bulk-delete";
+    pub const API_TOKENS_PREFIX: &str = "/api/links/";
     pub const API_CLEAR_CACHE: &str = "/api/clear-cache";
     pub const API_TOKENS_REVIVE_SUFFIX: &str = "/revive";
     pub const LOGO: &str = "/logo.svg";
@@ -94,7 +94,7 @@ mod header_name {
 /// # });
 /// ```
 pub(crate) struct Handler {
-    /// Shared application state containing download tokens and configuration
+    /// Shared application state containing download links and configuration
     pub(crate) state: Arc<AppState>,
     /// Cached index.html with all config placeholders replaced
     index_html: Arc<str>,
@@ -484,14 +484,14 @@ impl Handler {
             (method::GET, route::ABOUT) => self.about_page().await,
             (method::GET, route::API_BROWSE) => self.browse(query).await,
             (method::GET, route::API_STATS) => self.stats().await,
-            (method::GET, route::API_TOKENS) => self.list_tokens().await,
+            (method::GET, route::API_TOKENS) => self.list_links().await,
             (method::POST, route::API_GENERATE) => {
                 let body = helpers::extract_body(request)?;
                 self.generate_link(&body).await
             }
             (method::POST, route::API_TOKENS_BULK_DELETE) => {
                 let body = helpers::extract_body(request)?;
-                self.bulk_delete_tokens(&body).await
+                self.bulk_delete_links(&body).await
             }
             (method::POST, route::API_CLEAR_CACHE) => self.clear_cache().await,
             (method::POST, path)
@@ -541,7 +541,7 @@ impl Handler {
     /// Aggregates token state (active/used/expired counts, total downloads)
     /// and server uptime into a [`StatsResponse`].
     async fn stats(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let tokens = self.state.tokens.read().await;
+        let links = self.state.links.read().await;
         let now = std::time::Instant::now();
 
         let mut active = 0u32;
@@ -549,7 +549,7 @@ impl Handler {
         let mut expired = 0u32;
         let mut total_downloads = 0u64;
 
-        for item in tokens.values() {
+        for item in links.values() {
             let count = item.download_count.load(Ordering::Relaxed);
             total_downloads += count as u64;
             let is_expired = item.expires_at.is_some_and(|e| now >= e);
@@ -566,9 +566,9 @@ impl Handler {
         let uptime_seconds = self.state.started_at.elapsed().as_secs();
 
         let stats = StatsResponse {
-            active_tokens: active,
-            used_tokens: used,
-            expired_tokens: expired,
+            active_links: active,
+            used_links: used,
+            expired_links: expired,
             total_downloads,
             uptime_seconds,
         };

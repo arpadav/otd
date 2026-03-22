@@ -100,7 +100,7 @@ impl super::Handler {
             archive_state,
             active_serving: std::sync::atomic::AtomicU32::new(0),
         };
-        self.state.tokens.write().await.insert(token.clone(), item);
+        self.state.links.write().await.insert(token.clone(), item);
         self.state.mark_dirty();
         // --------------------------------------------------
         // spawn background archive creation for multi-file downloads
@@ -128,14 +128,14 @@ impl super::Handler {
         HttpResponse::ok().body_json(&response).map_err(Into::into)
     }
 
-    /// Lists all active download tokens with their status.
-    pub(crate) async fn list_tokens(
+    /// Lists all active download links with their status.
+    pub(crate) async fn list_links(
         &self,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let tokens = self.state.tokens.read().await;
-        let mut items = Vec::with_capacity(tokens.len());
+        let links = self.state.links.read().await;
+        let mut items = Vec::with_capacity(links.len());
         let now = std::time::Instant::now();
-        for (token, item) in tokens.iter() {
+        for (token, item) in links.iter() {
             let download_url = self.download_url(&item.name, token).await;
             let count = item.download_count.load(Ordering::Relaxed);
             let expired = item.expires_at.map(|e| now >= e).unwrap_or(false);
@@ -176,10 +176,10 @@ impl super::Handler {
         HttpResponse::ok().body_json(&items).map_err(Into::into)
     }
 
-    /// Deletes tokens matching a filter: "used", "expired", or "all".
+    /// Deletes links matching a filter: "used", "expired", or "all".
     ///
-    /// Also removes archive cache files for deleted tokens.
-    pub(crate) async fn bulk_delete_tokens(
+    /// Also removes archive cache files for deleted links.
+    pub(crate) async fn bulk_delete_links(
         &self,
         body: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
@@ -189,13 +189,13 @@ impl super::Handler {
         }
 
         let req: BulkDeleteRequest = serde_json::from_str(body)?;
-        let mut tokens = self.state.tokens.write().await;
-        let before = tokens.len();
+        let mut links = self.state.links.write().await;
+        let before = links.len();
         let now = std::time::Instant::now();
 
         // Collect cache paths of items that will be removed
         let mut cache_paths: Vec<std::path::PathBuf> = Vec::new();
-        tokens.retain(|_, item| {
+        links.retain(|_, item| {
             let count = item.download_count.load(Ordering::Relaxed);
             let is_expired = item.expires_at.is_some_and(|e| now >= e);
             let is_used = count >= item.max_downloads;
@@ -213,11 +213,11 @@ impl super::Handler {
             }
             keep
         });
-        let removed = before - tokens.len();
+        let removed = before - links.len();
         if removed > 0 {
             self.state.mark_dirty();
         }
-        drop(tokens);
+        drop(links);
 
         // --------------------------------------------------
         // clean up cache files outside the lock
@@ -233,7 +233,7 @@ impl super::Handler {
         // respond with bulk deleted
         // --------------------------------------------------
         let filter = &req.filter;
-        tracing::info!("Bulk delete (filter={filter}): removed {removed} tokens");
+        tracing::info!("Bulk delete (filter={filter}): removed {removed} links");
         HttpResponse::ok()
             .body_json(&BulkDeleteResponse { removed })
             .map_err(Into::into)
@@ -247,8 +247,8 @@ impl super::Handler {
         // --------------------------------------------------
         // get token and check it exists
         // --------------------------------------------------
-        let tokens = self.state.tokens.read().await;
-        let item = match tokens.get(token) {
+        let links = self.state.links.read().await;
+        let item = match links.get(token) {
             Some(item) => item,
             None => return Ok(HttpResponse::not_found()),
         };
@@ -274,7 +274,7 @@ impl super::Handler {
         drop(archive);
         let paths = item.paths.clone();
         let compression = item.compression;
-        drop(tokens);
+        drop(links);
         super::Handler::spawn_archive_creation(
             Arc::clone(&self.state),
             token.to_string(),
@@ -288,13 +288,13 @@ impl super::Handler {
         Ok(HttpResponse::ok().body_text("Archive recreation started"))
     }
 
-    /// Clears all tokens and their persisted link files.
+    /// Clears all links and their persisted link files.
     pub(crate) async fn clear_cache(
         &self,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = crate::config::data_dir();
         let removed = self.state.clear_links(&data_dir).await;
-        tracing::info!("Clear cache: removed {removed} tokens");
+        tracing::info!("Clear cache: removed {removed} links");
 
         #[derive(serde::Serialize)]
         struct ClearResponse {
@@ -311,8 +311,8 @@ impl super::Handler {
         &self,
         token: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let mut tokens = self.state.tokens.write().await;
-        let removed = tokens.remove(token).inspect(|item| {
+        let mut links = self.state.links.write().await;
+        let removed = links.remove(token).inspect(|item| {
             item.remove_cache_file();
             self.state.mark_dirty();
             tracing::info!("Deleted token: {token}");

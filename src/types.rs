@@ -279,20 +279,20 @@ pub struct StagedFile {
 ///
 /// Returned by the `/api/stats` endpoint with aggregate token and download metrics.
 pub(crate) struct StatsResponse {
-    /// Number of tokens that are still valid and have remaining downloads
-    pub(crate) active_tokens: u32,
-    /// Number of tokens that have reached their download limit
-    pub(crate) used_tokens: u32,
-    /// Number of tokens that have passed their expiration time
-    pub(crate) expired_tokens: u32,
-    /// Total downloads across all tokens
+    /// Number of links that are still valid and have remaining downloads
+    pub(crate) active_links: u32,
+    /// Number of links that have reached their download limit
+    pub(crate) used_links: u32,
+    /// Number of links that have passed their expiration time
+    pub(crate) expired_links: u32,
+    /// Total downloads across all links
     pub(crate) total_downloads: u64,
     /// Server uptime in seconds
     pub(crate) uptime_seconds: u64,
 }
 
 #[derive(Debug, Serialize)]
-/// Represents a single token in the `/api/tokens` listing.
+/// Represents a single token in the `/api/links` listing.
 pub(crate) struct TokenListItem {
     /// Unique token identifier
     pub(crate) token: String,
@@ -323,7 +323,7 @@ pub(crate) struct TokenListItem {
 #[derive(Debug, Serialize)]
 /// Response payload for bulk-delete and single-delete operations.
 pub(crate) struct BulkDeleteResponse {
-    /// Number of tokens removed
+    /// Number of links removed
     pub(crate) removed: usize,
 }
 
@@ -396,7 +396,7 @@ impl PersistedDownloadItem {
 /// Shared application state containing configuration and active downloads.
 ///
 /// This structure is shared between all request handlers and contains the
-/// core application data including active download tokens and configuration.
+/// core application data including active download links and configuration.
 ///
 /// # Examples
 ///
@@ -407,12 +407,12 @@ impl PersistedDownloadItem {
 /// ```
 pub struct AppState {
     /// Map of active download tokens to their corresponding items
-    pub(crate) tokens: RwLock<HashMap<String, DownloadItem>>,
+    pub(crate) links: RwLock<HashMap<String, DownloadItem>>,
     /// Active login sessions: token → creation time
     pub(crate) sessions: RwLock<HashMap<String, std::time::Instant>>,
     /// Server start time for uptime tracking
     pub(crate) started_at: std::time::Instant,
-    /// Set when tokens change; cleared after state is persisted.
+    /// Set when links change; cleared after state is persisted.
     pub(crate) dirty: std::sync::atomic::AtomicBool,
 }
 /// [`AppState`] implementation of [`Default`]
@@ -434,17 +434,17 @@ impl AppState {
     /// ```
     pub fn new() -> Self {
         Self {
-            tokens: RwLock::new(HashMap::new()),
+            links: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             started_at: std::time::Instant::now(),
             dirty: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    /// Creates an `AppState` pre-loaded with persisted tokens.
-    pub(crate) fn with_tokens(tokens: HashMap<String, DownloadItem>) -> Self {
+    /// Creates an `AppState` pre-loaded with persisted links.
+    pub(crate) fn with_links(links: HashMap<String, DownloadItem>) -> Self {
         Self {
-            tokens: RwLock::new(tokens),
+            links: RwLock::new(links),
             sessions: RwLock::new(HashMap::new()),
             started_at: std::time::Instant::now(),
             dirty: std::sync::atomic::AtomicBool::new(false),
@@ -459,7 +459,7 @@ impl AppState {
     /// Saves the current token state to disk as individual per-link JSON files.
     ///
     /// Each token is written as `links/<token>.json` via atomic `.tmp` rename.
-    /// After writing, orphan files (tokens no longer in memory) are removed.
+    /// After writing, orphan files (links no longer in memory) are removed.
     pub(crate) async fn save_state(
         &self,
         dir: &std::path::Path,
@@ -471,13 +471,13 @@ impl AppState {
         // --------------------------------------------------
         std::fs::create_dir_all(&links_dir)?;
         let now = std::time::Instant::now();
-        let tokens = self.tokens.read().await;
+        let links = self.links.read().await;
         // --------------------------------------------------
         // write each token as an individual file
         // --------------------------------------------------
         let mut live_stems: std::collections::HashSet<String> =
-            std::collections::HashSet::with_capacity(tokens.len());
-        for (token, item) in tokens.iter() {
+            std::collections::HashSet::with_capacity(links.len());
+        for (token, item) in links.iter() {
             live_stems.insert(token.clone());
             let persisted = PersistedDownloadItem::from_download_item(item, now);
             let json = serde_json::to_string_pretty(&persisted)?;
@@ -486,7 +486,7 @@ impl AppState {
             std::fs::write(&tmp_path, json)?;
             std::fs::rename(&tmp_path, &file_path)?;
         }
-        drop(tokens);
+        drop(links);
         // --------------------------------------------------
         // remove orphan files whose stem isn't in the
         // in-memory token set
@@ -538,7 +538,7 @@ impl AppState {
         // --------------------------------------------------
         // per-link files, to read and store
         // --------------------------------------------------
-        let mut tokens = HashMap::new();
+        let mut links = HashMap::new();
         for entry in std::fs::read_dir(&links_dir)?.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -552,7 +552,7 @@ impl AppState {
                 Ok(json) => match serde_json::from_str::<PersistedDownloadItem>(&json) {
                     Ok(persisted) => {
                         tracing::debug!("Loaded link file {path:?}");
-                        tokens.insert(stem, persisted.into());
+                        links.insert(stem, persisted.into());
                     }
                     Err(e) => tracing::warn!(
                         "Skipping malformed json file (expecting link) {path:?}: {e}"
@@ -562,35 +562,35 @@ impl AppState {
             }
         }
         // --------------------------------------------------
-        // if no valid tokens found, return an error
+        // if no valid links found, return an error
         // --------------------------------------------------
-        match tokens.is_empty() {
-            false => Ok(tokens),
+        match links.is_empty() {
+            false => Ok(links),
             true => Err("No valid link files found".into()),
         }
     }
 
-    /// Clears all tokens from memory and deletes the `links/` directory.
+    /// Clears all links from memory and deletes the `links/` directory.
     pub(crate) async fn clear_links(&self, dir: &std::path::Path) -> usize {
-        let mut tokens = self.tokens.write().await;
-        let count = tokens.len();
+        let mut links = self.links.write().await;
+        let count = links.len();
         // --------------------------------------------------
-        // remove archive cache files for all tokens
+        // remove archive cache files for all links
         // --------------------------------------------------
         cfg_if::cfg_if! {
             if #[cfg(feature = "rayon")] {
-                tokens
+                links
                     .par_iter()
                     .map(|(_, v)| v)
                     .for_each(|item| { item.remove_cache_file(); });
             } else {
-                tokens
+                links
                     .values()
                     .for_each(|item| { item.remove_cache_file(); });
             }
         }
-        tokens.clear();
-        drop(tokens);
+        links.clear();
+        drop(links);
         let links_dir = dir.join(LINKS_DIR);
         let _ = std::fs::remove_dir_all(&links_dir);
         let _ = std::fs::create_dir_all(&links_dir);
@@ -666,8 +666,8 @@ mod tests {
 
         // Insert a token
         smol::block_on(async {
-            let mut tokens = state.tokens.write().await;
-            tokens.insert(
+            let mut links = state.links.write().await;
+            links.insert(
                 "test-token".to_string(),
                 DownloadItem {
                     paths: vec![PathBuf::from("/tmp/a.txt")],
@@ -696,14 +696,14 @@ mod tests {
     }
 
     #[test]
-    fn test_load_state_includes_all_tokens() {
+    fn test_load_state_includes_all_links() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new();
 
         smol::block_on(async {
-            let mut tokens = state.tokens.write().await;
+            let mut links = state.links.write().await;
             // Fully used token
-            tokens.insert(
+            links.insert(
                 "used-token".to_string(),
                 DownloadItem {
                     paths: vec![PathBuf::from("/tmp/b.txt")],
@@ -719,7 +719,7 @@ mod tests {
                 },
             );
             // Active token
-            tokens.insert(
+            links.insert(
                 "active-token".to_string(),
                 DownloadItem {
                     paths: vec![PathBuf::from("/tmp/c.txt")],
@@ -738,7 +738,7 @@ mod tests {
 
         smol::block_on(state.save_state(dir.path())).unwrap();
         let loaded = AppState::load_state(dir.path()).unwrap();
-        // Both tokens are loaded (including used ones) for display
+        // Both links are loaded (including used ones) for display
         assert_eq!(loaded.len(), 2);
         assert!(loaded.contains_key("active-token"));
         assert!(loaded.contains_key("used-token"));
@@ -750,8 +750,8 @@ mod tests {
         let state = AppState::new();
 
         smol::block_on(async {
-            let mut tokens = state.tokens.write().await;
-            tokens.insert(
+            let mut links = state.links.write().await;
+            links.insert(
                 "tok1".to_string(),
                 DownloadItem {
                     paths: vec![PathBuf::from("/tmp/x.txt")],
@@ -771,7 +771,7 @@ mod tests {
         assert!(dir.path().join("links/tok1.json").is_file());
         let removed = smol::block_on(state.clear_links(dir.path()));
         assert_eq!(removed, 1);
-        assert_eq!(smol::block_on(state.tokens.read()).len(), 0);
+        assert_eq!(smol::block_on(state.links.read()).len(), 0);
         assert!(dir.path().join("links").is_dir());
         assert_eq!(
             std::fs::read_dir(dir.path().join("links")).unwrap().count(),
@@ -785,8 +785,8 @@ mod tests {
         let state = AppState::new();
 
         smol::block_on(async {
-            let mut tokens = state.tokens.write().await;
-            tokens.insert(
+            let mut links = state.links.write().await;
+            links.insert(
                 "keep-me".to_string(),
                 DownloadItem {
                     paths: vec![PathBuf::from("/tmp/k.txt")],

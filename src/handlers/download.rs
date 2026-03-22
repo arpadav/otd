@@ -461,8 +461,8 @@ impl super::Handler {
                 return Ok(HttpResponse::bad_request().body_text("Missing token parameter"));
             }
         };
-        let tokens = self.state.tokens.read().await;
-        let item = match tokens.get(token) {
+        let links = self.state.links.read().await;
+        let item = match links.get(token) {
             Some(item) => item,
             None => {
                 tracing::info!("Download from {peer_addr}: token not found: {token}");
@@ -726,8 +726,8 @@ impl super::Handler {
                     Ok(cache_path)
                 })
                 .await;
-            let tokens = state.tokens.read().await;
-            if let Some(item) = tokens.get(&token) {
+            let links = state.links.read().await;
+            if let Some(item) = links.get(&token) {
                 let mut zs = item.archive_state.write().await;
                 match result {
                     Ok(path) => *zs = ArchiveState::Ready(path),

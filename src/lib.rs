@@ -33,7 +33,7 @@
 //! - [`Server`]: Dual-port HTTP server using `smol` async runtime
 //! - [`Handler`]: Request routing and business logic
 //! - [`http::HttpResponse`]: HTTP response builder with proper headers
-//! - [`AppState`]: Shared application state with download tokens
+//! - [`AppState`]: Shared application state with download links
 //!
 //! ## Example
 //!

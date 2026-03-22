@@ -95,10 +95,10 @@ Environment variables take precedence over config file values.
 | `GET` | `/logout` | Clear session | Session |
 | `GET` | `/api/browse?path=<path>` | Browse files in directory | Yes |
 | `GET` | `/api/stats` | Dashboard statistics | Yes |
-| `GET` | `/api/tokens` | List active download tokens | Yes |
+| `GET` | `/api/links` | List active download links | Yes |
 | `POST` | `/api/generate` | Generate download link | Yes |
-| `POST` | `/api/tokens/bulk-delete` | Bulk delete tokens by filter | Yes |
-| `DELETE` | `/api/tokens/<token>` | Delete specific token | Yes |
+| `POST` | `/api/links/bulk-delete` | Bulk delete links by filter | Yes |
+| `DELETE` | `/api/links/<token>` | Delete specific token | Yes |
 
 ### Download Server (default: `0.0.0.0:15205`)
 

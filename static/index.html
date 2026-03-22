@@ -795,7 +795,8 @@
                                     Clear Link Cache
                                 </p>
                                 <p class="text-xs text-text-muted">
-                                    Permanently delete all link files from disk and clear all tokens from memory
+                                    Permanently delete all link files from disk
+                                    and clear all links from memory
                                 </p>
                             </div>
                             <button
@@ -1097,13 +1098,13 @@
                     const res = await fetch("/api/stats");
                     const s = await res.json();
                     document.getElementById("statActive").textContent =
-                        s.active_tokens;
+                        s.active_links;
                     document.getElementById("statDownloads").textContent =
                         s.total_downloads;
                     document.getElementById("statUsed").textContent =
-                        s.used_tokens;
+                        s.used_links;
                     document.getElementById("statExpired").textContent =
-                        s.expired_tokens;
+                        s.expired_links;
                     const uptime = formatDuration(s.uptime_seconds);
                     document.getElementById("statUptime").textContent = uptime;
                     const su = document.getElementById("settingsUptime");
@@ -1111,16 +1112,16 @@
                 } catch (e) {}
             }
 
-            function renderRecentActivity(tokens) {
+            function renderRecentActivity(links) {
                 const container = document.getElementById("recentActivity");
-                if (!tokens.length) {
+                if (!links.length) {
                     container.innerHTML =
                         '<div class="p-8 text-center text-text-muted text-sm"><svg class="w-8 h-8 mx-auto text-text-muted/30 mb-2" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>No activity yet</div>';
                     return;
                 }
                 let html = "";
-                // Show at most 20 recent tokens, sorted by creation (newest first based on remaining time)
-                const recent = tokens.slice(0, 20);
+                // Show at most 20 recent links, sorted by creation (newest first based on remaining time)
+                const recent = links.slice(0, 20);
                 for (const t of recent) {
                     const count = t.download_count || 0;
                     const isExpired = t.expired;
@@ -1372,20 +1373,20 @@
 
             async function loadTokens() {
                 try {
-                    const res = await fetch("/api/tokens");
-                    allTokens = await res.json();
-                    renderTokens(allTokens);
+                    const res = await fetch("/api/links");
+                    allLinks = await res.json();
+                    renderLinks(allLinks);
                     if (currentView === "dashboard")
                         renderRecentActivity(allTokens);
                 } catch (e) {
                     document.getElementById("tokenList").innerHTML =
-                        `<div class="text-sm text-red-600 p-4">Error loading tokens</div>`;
+                        `<div class="text-sm text-red-600 p-4">Error loading links</div>`;
                 }
             }
 
-            function renderTokens(tokens) {
+            function renderLinks(links) {
                 const container = document.getElementById("tokenList");
-                if (!tokens.length) {
+                if (!links.length) {
                     container.innerHTML = `
                       <div class="text-center text-text-muted text-sm py-8">
                       <img src="/logo.svg" alt="OTD" class="w-5 h-5"/>
@@ -1395,13 +1396,13 @@
                 }
 
                 // Adaptive polling: 2s while any token is preparing, 30s otherwise
-                const hasPreparing = tokens.some(
+                const hasPreparing = links.some(
                     (t) => t.archive_status === "preparing",
                 );
                 updatePollingInterval(hasPreparing);
 
                 let html = "";
-                for (const t of tokens) {
+                for (const t of links) {
                     const count = t.download_count || 0;
                     const isExpired = t.expired;
                     const isUsed = count >= t.max_downloads;
@@ -1498,7 +1499,7 @@
 
             async function bulkDelete(filter) {
                 try {
-                    const res = await fetch("/api/tokens/bulk-delete", {
+                    const res = await fetch("/api/links/bulk-delete", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ filter }),
@@ -1515,7 +1516,7 @@
             function confirmBulkDelete(filter) {
                 if (
                     confirm(
-                        `Delete ${filter === "all" ? "ALL" : filter} tokens? This cannot be undone.`,
+                        `Delete ${filter === "all" ? "ALL" : filter} links? This cannot be undone.`,
                     )
                 ) {
                     bulkDelete(filter);
@@ -1524,7 +1525,7 @@
 
             async function deleteToken(token) {
                 try {
-                    await fetch(`/api/tokens/${token}`, { method: "DELETE" });
+                    await fetch(`/api/links/${token}`, { method: "DELETE" });
                     toast("Token deleted");
                     loadTokens();
                     if (currentView === "dashboard") loadStats();
@@ -1535,7 +1536,7 @@
 
             async function reviveToken(token) {
                 try {
-                    await fetch(`/api/tokens/${token}/revive`, {
+                    await fetch(`/api/links/${token}/revive`, {
                         method: "POST",
                     });
                     toast("Archive recreation started");
@@ -1548,11 +1549,15 @@
             async function confirmClearCache() {
                 if (
                     !confirm(
-                        "This will permanently delete ALL link files and clear all tokens. This cannot be undone.",
+                        "This will permanently delete ALL link files and clear all links. This cannot be undone.",
                     )
                 )
                     return;
-                if (!confirm("Are you absolutely sure? All link history will be lost."))
+                if (
+                    !confirm(
+                        "Are you absolutely sure? All link history will be lost.",
+                    )
+                )
                     return;
                 try {
                     const res = await fetch("/api/clear-cache", {

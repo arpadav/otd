@@ -26,5 +26,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker support with multi-stage build and docker-compose configuration
 - Optional parallel directory traversal via `rayon` and `jwalk` (`parallel` feature)
 - Token management: list, delete, bulk-delete (used/expired/all)
-- Dashboard statistics endpoint (active/used/expired tokens, total downloads, uptime)
+- Dashboard statistics endpoint (active/used/expired links, total downloads, uptime)
 - About page and login/logout flow
