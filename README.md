@@ -98,7 +98,7 @@ Environment variables take precedence over config file values.
 | `GET` | `/api/links` | List active download links | Yes |
 | `POST` | `/api/generate` | Generate download link | Yes |
 | `POST` | `/api/links/bulk-delete` | Bulk delete links by filter | Yes |
-| `DELETE` | `/api/links/<token>` | Delete specific token | Yes |
+| `DELETE` | `/api/links/<token>` | Delete specific link | Yes |
 
 ### Download Server (default: `0.0.0.0:15205`)
 

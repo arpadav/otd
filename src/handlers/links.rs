@@ -239,13 +239,13 @@ impl super::Handler {
             .map_err(Into::into)
     }
 
-    /// Re-creates the archive cache for a token whose archive was deleted.
-    pub(crate) async fn revive_token(
+    /// Re-creates the archive cache for a link whose archive was deleted.
+    pub(crate) async fn revive_link(
         &self,
         token: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         // --------------------------------------------------
-        // get token and check it exists
+        // get link and check it exists
         // --------------------------------------------------
         let links = self.state.links.read().await;
         let item = match links.get(token) {
@@ -284,7 +284,7 @@ impl super::Handler {
         // --------------------------------------------------
         // return success
         // --------------------------------------------------
-        tracing::info!("Reviving archive for token: {token}");
+        tracing::info!("Reviving archive for link: {token}");
         Ok(HttpResponse::ok().body_text("Archive recreation started"))
     }
 
@@ -306,8 +306,8 @@ impl super::Handler {
             .map_err(Into::into)
     }
 
-    /// Deletes a download token and its archive cache file.
-    pub(crate) async fn delete_token(
+    /// Deletes a download link and its archive cache file.
+    pub(crate) async fn delete_link(
         &self,
         token: &str,
     ) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
@@ -315,7 +315,7 @@ impl super::Handler {
         let removed = links.remove(token).inspect(|item| {
             item.remove_cache_file();
             self.state.mark_dirty();
-            tracing::info!("Deleted token: {token}");
+            tracing::info!("Deleted link: {token}");
         });
         HttpResponse::ok()
             .body_json(&BulkDeleteResponse {

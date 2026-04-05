@@ -465,8 +465,8 @@ impl super::Handler {
         let item = match links.get(token) {
             Some(item) => item,
             None => {
-                tracing::info!("Download from {peer_addr}: token not found: {token}");
-                return Ok(HttpResponse::not_found().body_text("Token not found"));
+                tracing::info!("Download from {peer_addr}: link not found: {token}");
+                return Ok(HttpResponse::not_found().body_text("Link not found"));
             }
         };
         // --------------------------------------------------
@@ -475,7 +475,7 @@ impl super::Handler {
         if let Some(expires_at) = item.expires_at
             && std::time::Instant::now() >= expires_at
         {
-            tracing::info!("Download from {peer_addr}: token expired: {token}");
+            tracing::info!("Download from {peer_addr}: link expired: {token}");
             return Ok(HttpResponse::gone().body_text("Download link has expired"));
         }
         // --------------------------------------------------
@@ -715,14 +715,14 @@ impl super::Handler {
                     std::fs::create_dir_all(ARCHIVE_CACHE_DIR)?;
                     let cache_path = PathBuf::from(format!("{ARCHIVE_CACHE_DIR}/{hash}{ext}"));
                     if cache_path.exists() {
-                        tracing::info!("Archive cache hit for token {token_inner}: {cache_path:?}");
+                        tracing::info!("Archive cache hit for link {token_inner}: {cache_path:?}");
                         return Ok(cache_path);
                     }
                     let tmp_path = cache_path.with_extension(format!("{}.tmp", &ext[1..]));
                     let compressed = CompressedFile::new(paths, compression);
                     compressed.write_to_file(&tmp_path)?;
                     std::fs::rename(&tmp_path, &cache_path)?;
-                    tracing::info!("Archive created for token {token_inner}: {cache_path:?}");
+                    tracing::info!("Archive created for link {token_inner}: {cache_path:?}");
                     Ok(cache_path)
                 })
                 .await;
@@ -732,7 +732,7 @@ impl super::Handler {
                 match result {
                     Ok(path) => *zs = ArchiveState::Ready(path),
                     Err(e) => {
-                        tracing::error!("Archive creation failed for token {token}: {e}");
+                        tracing::error!("Archive creation failed for link {token}: {e}");
                         *zs = ArchiveState::Failed(e.to_string());
                     }
                 }

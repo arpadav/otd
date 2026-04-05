@@ -502,11 +502,11 @@ impl Handler {
                     .strip_prefix(route::API_TOKENS_PREFIX)
                     .and_then(|s| s.strip_suffix(route::API_TOKENS_REVIVE_SUFFIX))
                     .unwrap_or("");
-                self.revive_token(token).await
+                self.revive_link(token).await
             }
             (method::DELETE, path) if path.starts_with(route::API_TOKENS_PREFIX) => {
                 let token = path.strip_prefix(route::API_TOKENS_PREFIX).unwrap_or("");
-                self.delete_token(token).await
+                self.delete_link(token).await
             }
             (method::GET, route::LOGOUT) => {
                 if let Some(ref token) = session_cookie {
@@ -538,7 +538,7 @@ impl Handler {
 
     /// Returns dashboard statistics as JSON.
     ///
-    /// Aggregates token state (active/used/expired counts, total downloads)
+    /// Aggregates link state (active/used/expired counts, total downloads)
     /// and server uptime into a [`StatsResponse`].
     async fn stats(&self) -> Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
         let links = self.state.links.read().await;
