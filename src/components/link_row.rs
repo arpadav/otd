@@ -67,9 +67,6 @@ const REVIVE_BTN_STY: &str = crate::classes!(
     "cursor-pointer"
 );
 
-// --------------------------------------------------
-// helpers
-// --------------------------------------------------
 /// Formats an expiry duration into a human-readable string
 pub fn format_expiry(secs: Option<u64>, expired: bool) -> String {
     if expired {
@@ -84,9 +81,6 @@ pub fn format_expiry(secs: Option<u64>, expired: bool) -> String {
     }
 }
 
-// --------------------------------------------------
-// sub-components
-// --------------------------------------------------
 /// Renders the status badge for a link based on priority:
 /// Source Missing > Expired > Used > Failed > Preparing > Active
 #[component]
@@ -124,9 +118,6 @@ fn StatusBadge(item: TokenListItem) -> Element {
     }
 }
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// A single row in the links management table
 pub fn LinkRow(
@@ -175,7 +166,9 @@ pub fn LinkRow(
 
     rsx! {
         tr { class: "{row_class}",
-            // Name
+            // --------------------------------------------------
+            // name cell
+            // --------------------------------------------------
             td { class: TABLE_CELL_STY,
                 div {
                     span { class: NAME_STY, "{item.name}" }
@@ -187,19 +180,27 @@ pub fn LinkRow(
                     "{item.token}"
                 }
             }
-            // Status
+            // --------------------------------------------------
+            // status cell
+            // --------------------------------------------------
             td { class: TABLE_CELL_STY,
                 StatusBadge { item: item.clone() }
             }
-            // Downloads
+            // --------------------------------------------------
+            // downloads cell
+            // --------------------------------------------------
             td { class: TABLE_CELL_NUM_STY,
                 "{item.download_count} / {item.max_downloads}"
             }
-            // Expiry
+            // --------------------------------------------------
+            // expiry cell
+            // --------------------------------------------------
             td { class: TABLE_CELL_NUM_STY,
                 "{format_expiry(item.expires_in_seconds, item.expired)}"
             }
-            // Actions
+            // --------------------------------------------------
+            // actions cell
+            // --------------------------------------------------
             td { class: TABLE_CELL_STY,
                 div { class: ACTIONS_STY,
                     button {

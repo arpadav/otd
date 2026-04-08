@@ -18,13 +18,9 @@ use dioxus::prelude::*;
 // --------------------------------------------------
 const CENTER_PAGE_STY: &str =
     crate::classes!("flex", "items-center", "justify-center", "min-h-[60vh]");
-
 const LOGIN_CARD_STY: &str = crate::classes!("card", "w-full", "max-w-sm");
-
 const PAGE_TITLE_STY: &str = crate::classes!("text-xl", "font-bold", "mb-4");
-
 const FORM_STY: &str = crate::classes!("flex", "flex-col", "gap-4");
-
 const ERROR_STY: &str = crate::classes!(
     "mb-4",
     "p-3",
@@ -36,9 +32,6 @@ const ERROR_STY: &str = crate::classes!(
     "text-sm"
 );
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// Login form for password-protected admin access
 pub fn Login() -> Element {

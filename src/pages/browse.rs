@@ -77,9 +77,6 @@ const SUCCESS_URL_STY: &str = crate::classes!(
 );
 const SUCCESS_ACTIONS_STY: &str = crate::classes!("flex", "items-center", "gap-3", "mt-2");
 
-// --------------------------------------------------
-// helpers
-// --------------------------------------------------
 /// Splits a path into breadcrumb segments with cumulative paths
 fn breadcrumb_segments(path: &str) -> Vec<(String, String)> {
     if path.is_empty() {
@@ -94,9 +91,6 @@ fn breadcrumb_segments(path: &str) -> Vec<(String, String)> {
     segments
 }
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// File browser page with directory listing, selection, and link generation
 pub fn Browse() -> Element {
@@ -170,8 +164,9 @@ pub fn Browse() -> Element {
     rsx! {
         div {
             h1 { class: "{PAGE_TITLE_STY} mb-4", "Files" }
-
-            // Breadcrumbs
+            // --------------------------------------------------
+            // breadcrumbs
+            // --------------------------------------------------
             div { class: BREADCRUMB_STY,
                 span {
                     class: BREADCRUMB_LINK_STY,
@@ -199,8 +194,9 @@ pub fn Browse() -> Element {
                     }
                 }
             }
-
-            // Toolbar: search + selection info
+            // --------------------------------------------------
+            // toolbar: search + selection info
+            // --------------------------------------------------
             div { class: TOOLBAR_STY,
                 input {
                     r#type: "search",
@@ -227,8 +223,9 @@ pub fn Browse() -> Element {
                     }
                 }
             }
-
-            // File listing
+            // --------------------------------------------------
+            // file listing
+            // --------------------------------------------------
             div { class: CARD_LIST_STY,
                 match &*listing.read_unchecked() {
                     Some(Ok(items)) => {
@@ -283,8 +280,9 @@ pub fn Browse() -> Element {
                     },
                 }
             }
-
-            // Generate link modal
+            // --------------------------------------------------
+            // generate link modal
+            // --------------------------------------------------
             Modal {
                 show: show_generate() && (!selected().is_empty() || gen_result.read().is_some()),
                 on_close: move |_| {
@@ -294,7 +292,9 @@ pub fn Browse() -> Element {
                 title: "Generate Download Link".to_string(),
 
                 div { class: MODAL_BODY_STY,
-                    // Success state
+                    // --------------------------------------------------
+                    // result state: success, error, or form
+                    // --------------------------------------------------
                     match &*gen_result.read() {
                         Some(Ok(url)) => rsx! {
                             div { class: SUCCESS_CENTER_STY,
@@ -350,7 +350,6 @@ pub fn Browse() -> Element {
                             }
                         },
                         None => rsx! {
-                            // Form state
                             p { class: PANEL_SUBTEXT_STY,
                                 "Creating link for {selected().len()} item(s)"
                             }

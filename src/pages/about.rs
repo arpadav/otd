@@ -94,7 +94,9 @@ pub fn About() -> Element {
                     }
                 }
                 hr { class: "border-border" }
-                // Links
+                // --------------------------------------------------
+                // links
+                // --------------------------------------------------
                 div { class: "space-y-3",
                     h2 { class: SECTION_HEADING_STY, "Links" }
                     ul { class: LINKS_LIST_STY,
@@ -121,7 +123,9 @@ pub fn About() -> Element {
                     }
                 }
                 hr { class: "border-border" }
-                // Support
+                // --------------------------------------------------
+                // support
+                // --------------------------------------------------
                 div { class: "space-y-3",
                     h2 { class: SECTION_HEADING_STY, "Support" }
                     p { class: SUPPORT_TEXT_STY,

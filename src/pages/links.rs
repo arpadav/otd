@@ -26,17 +26,11 @@ const HEADER_ROW_STY: &str = crate::classes!(
     "flex-wrap",
     "gap-3"
 );
-
 const HEADER_ACTIONS_STY: &str = crate::classes!("flex", "items-center", "gap-2");
-
 const BTN_XS_STY: &str = "btn-xs";
-
 const BTN_XS_DANGER_STY: &str = "btn-xs-danger";
-
 const CARD_TABLE_STY: &str = crate::classes!("card", "overflow-x-auto");
-
 const TABLE_HEADER_BORDER_STY: &str = crate::classes!("border-b", "border-border");
-
 const TABLE_HEADER_STY: &str = crate::classes!(
     "px-4",
     "py-2",
@@ -47,7 +41,6 @@ const TABLE_HEADER_STY: &str = crate::classes!(
     "uppercase",
     "tracking-wider"
 );
-
 const SUMMARY_BAR_STY: &str = crate::classes!(
     "text-sm",
     "text-text-muted",
@@ -57,22 +50,34 @@ const SUMMARY_BAR_STY: &str = crate::classes!(
     "gap-1",
     "flex-wrap"
 );
-
 const REFRESH_SPIN_STY: &str = crate::classes!("inline-flex", "items-center", "gap-1");
 
 // --------------------------------------------------
-// types
+// constants
 // --------------------------------------------------
+/// Polling interval in ms: 2s while any archive is preparing, 30s otherwise
+const POLL_FAST_MS: u32 = 2_000;
+/// Polling interval in ms: 30s while no archive is preparing
+const POLL_SLOW_MS: u32 = 30_000;
+
+#[allow(
+    clippy::enum_variant_names,
+    reason = "might add more actions that arent Remove"
+)]
 #[derive(Clone, PartialEq)]
 /// Bulk action variants for batch link removal
 enum BulkAction {
+    /// Remove all links that have reached their download limit
     RemoveUsed,
+    /// Remove all links that have passed their expiry time
     RemoveExpired,
+    /// Remove all links unconditionally
     RemoveAll,
 }
 
 /// [`BulkAction`] implementation
 impl BulkAction {
+    /// Returns the dialog title for this bulk action
     fn title(&self) -> &'static str {
         match self {
             Self::RemoveUsed => "Remove Used Links",
@@ -80,6 +85,7 @@ impl BulkAction {
             Self::RemoveAll => "Remove All Links",
         }
     }
+    /// Returns the confirmation message, interpolating the total link count where relevant
     fn message(&self, count: usize) -> String {
         match self {
             Self::RemoveUsed => "Remove all used links? This cannot be undone.".into(),
@@ -87,6 +93,7 @@ impl BulkAction {
             Self::RemoveAll => format!("Remove all {count} links? This cannot be undone."),
         }
     }
+    /// Returns the confirm button label for this bulk action
     fn label(&self) -> &'static str {
         match self {
             Self::RemoveUsed => "Remove Used",
@@ -94,6 +101,7 @@ impl BulkAction {
             Self::RemoveAll => "Remove All",
         }
     }
+    /// Returns the API filter key sent to the bulk-delete endpoint
     fn api_key(&self) -> &'static str {
         match self {
             Self::RemoveUsed => "used",
@@ -103,16 +111,6 @@ impl BulkAction {
     }
 }
 
-// --------------------------------------------------
-// constants
-// --------------------------------------------------
-/// Polling interval in ms: 2s while any archive is preparing, 30s otherwise
-const POLL_FAST_MS: u32 = 2_000;
-const POLL_SLOW_MS: u32 = 30_000;
-
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// Links management page with table listing, bulk actions, and delete dialogs
 pub fn Links() -> Element {
@@ -123,7 +121,8 @@ pub fn Links() -> Element {
     let toast = use_toast();
 
     // --------------------------------------------------
-    // adaptive polling: faster while any archive is preparing
+    // adaptive polling: faster while any archive is preparing,
+    // slower while all archives are ready or no links exist
     // --------------------------------------------------
     use_future(move || async move {
         loop {
@@ -145,7 +144,9 @@ pub fn Links() -> Element {
         }
     });
 
-    // Compute summary counts
+    // --------------------------------------------------
+    // compute summary counts
+    // --------------------------------------------------
     let (total, active, used, expired, preparing) = links
         .read()
         .as_ref()
@@ -172,7 +173,9 @@ pub fn Links() -> Element {
 
     rsx! {
         div {
-            // Header with bulk actions
+            // --------------------------------------------------
+            // header with bulk actions
+            // --------------------------------------------------
             div { class: HEADER_ROW_STY,
                 h1 { class: PAGE_TITLE_STY, "Links" }
                 div { class: HEADER_ACTIONS_STY,
@@ -209,8 +212,9 @@ pub fn Links() -> Element {
                     }
                 }
             }
-
-            // Summary bar
+            // --------------------------------------------------
+            // summary bar
+            // --------------------------------------------------
             if total > 0 {
                 p { class: SUMMARY_BAR_STY,
                     "{total} links: "
@@ -225,8 +229,9 @@ pub fn Links() -> Element {
                     }
                 }
             }
-
-            // Table
+            // --------------------------------------------------
+            // table
+            // --------------------------------------------------
             div { class: CARD_TABLE_STY,
                 match &*links.read_unchecked() {
                     Some(Ok(items)) => {
@@ -276,8 +281,9 @@ pub fn Links() -> Element {
                     },
                 }
             }
-
-            // Bulk action confirm dialog
+            // --------------------------------------------------
+            // bulk action confirm dialog
+            // --------------------------------------------------
             if let Some(action) = &*pending_bulk.read() {
                 ConfirmDialog {
                     show: true,
@@ -303,8 +309,9 @@ pub fn Links() -> Element {
                     on_cancel: move |_| pending_bulk.set(None),
                 }
             }
-
-            // Per-link delete confirm dialog
+            // --------------------------------------------------
+            // per-link delete confirm dialog
+            // --------------------------------------------------
             if let Some(token) = &*pending_delete.read() {
                 ConfirmDialog {
                     show: true,

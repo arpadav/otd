@@ -34,9 +34,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-// --------------------------------------------------
-// types
-// --------------------------------------------------
 #[cfg(all(feature = "parallel", feature = "server"))]
 /// Entry state for hashing and caching
 type EntryState = Option<(String, u64)>;

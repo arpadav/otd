@@ -18,9 +18,6 @@ use dioxus::prelude::*;
 const CONFIRM_MSG_STY: &str = crate::classes!("text-sm", "text-text-muted", "mb-6");
 const CONFIRM_ACTIONS_STY: &str = crate::classes!("flex", "items-center", "justify-end", "gap-3");
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// Modal confirmation dialog with confirm/cancel actions
 pub fn ConfirmDialog(

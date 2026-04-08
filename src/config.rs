@@ -430,7 +430,10 @@ pub(crate) fn init_logging() {
     use std::str::FromStr;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-    // Read config synchronously at startup (CONFIG not yet initialized when called early)
+    // --------------------------------------------------
+    // read config synchronously at startup: CONFIG is not
+    // yet initialized when init_logging is called early
+    // --------------------------------------------------
     let (log_level, log_file) = match Config::load() {
         Ok((cfg, _)) => (cfg.log_level.unwrap_or_else(|| "info".into()), cfg.log_file),
         Err(_) => ("info".into(), None),

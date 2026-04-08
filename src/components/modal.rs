@@ -26,9 +26,6 @@ const MODAL_CLOSE_STY: &str = crate::classes!(
     "cursor-pointer"
 );
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// Reusable modal overlay with optional title and close button
 pub fn Modal(

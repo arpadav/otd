@@ -37,7 +37,6 @@ const NOT_FOUND_CENTER_STY: &str = crate::classes!(
     "justify-center",
     "min-h-[60vh]"
 );
-
 const NOT_FOUND_TITLE_STY: &str = crate::classes!("text-4xl", "font-bold", "mb-4");
 
 #[component]

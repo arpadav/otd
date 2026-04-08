@@ -40,9 +40,6 @@ const TOAST_ACTION_STY: &str = crate::classes!(
     "cursor-pointer"
 );
 
-// --------------------------------------------------
-// types
-// --------------------------------------------------
 #[derive(Clone, Debug, PartialEq)]
 /// Visual style variant for a toast notification
 pub enum ToastVariant {
@@ -70,9 +67,6 @@ pub struct ToastItem {
 /// Signal containing the active toast list
 pub type Toasts = Signal<Vec<ToastItem>>;
 
-// --------------------------------------------------
-// handle
-// --------------------------------------------------
 /// Handle for pushing toast notifications, obtained via [`use_toast`]
 #[derive(Clone, Copy)]
 pub struct Toast {
@@ -96,8 +90,9 @@ impl Toast {
             variant,
             action,
         });
-
-        // Auto-dismiss after TTL
+        // --------------------------------------------------
+        // auto-dismiss after TTL
+        // --------------------------------------------------
         spawn(async move {
             #[cfg(feature = "web")]
             gloo_timers::future::TimeoutFuture::new(TOAST_TTL_MS as u32).await;
@@ -115,9 +110,6 @@ pub fn use_toast() -> Toast {
     }
 }
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// Renders active toast notifications in a fixed-position container
 pub fn ToastProvider() -> Element {

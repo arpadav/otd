@@ -202,7 +202,9 @@ pub fn Layout() -> Element {
     let mut mobile_open = use_signal(|| false);
     let current_route = use_route::<AdminRoute>();
 
-    // Toggle dark class on document element via eval
+    // --------------------------------------------------
+    // toggle dark class on document element via eval
+    // --------------------------------------------------
     let toggle_dark = move |_| {
         let new_val = !dark_mode();
         dark_mode.set(new_val);
@@ -214,7 +216,9 @@ pub fn Layout() -> Element {
         document::eval(js);
     };
 
-    // Initialize dark mode from localStorage on mount
+    // --------------------------------------------------
+    // initialize dark mode from localStorage on mount
+    // --------------------------------------------------
     use_hook(|| {
         document::eval(
             r#"
@@ -230,22 +234,23 @@ pub fn Layout() -> Element {
         std::mem::discriminant(&current_route) == std::mem::discriminant(route)
     };
 
-    // Provide toast context to all child pages
+    // --------------------------------------------------
+    // provide toast context to all child pages
+    // --------------------------------------------------
     use_context_provider(|| Signal::new(Vec::<ToastItem>::new()));
 
     rsx! {
         div { class: ROOT_STY,
-            // Navbar
+            // --------------------------------------------------
+            // navbar
+            // --------------------------------------------------
             nav { class: NAV_STY,
-                // Logo
                 Link { to: AdminRoute::Dashboard,
                     div { class: LOGO_GROUP_STY,
                         img { src: crate::LOGO, class: LOGO_IMG_STY }
                         span { class: LOGO_TEXT_STY, "OTD" }
                     }
                 }
-
-                // Desktop navigation links
                 div { class: NAV_LINKS_STY,
                     for item in NAV_ITEMS.iter() {
                         Link {
@@ -255,8 +260,6 @@ pub fn Layout() -> Element {
                         }
                     }
                 }
-
-                // Right side: dark mode toggle + mobile menu button
                 div { class: NAV_RIGHT_STY,
                     button {
                         class: TOGGLE_BTN_STY,
@@ -275,8 +278,9 @@ pub fn Layout() -> Element {
                     }
                 }
             }
-
-            // Mobile menu
+            // --------------------------------------------------
+            // mobile menu
+            // --------------------------------------------------
             if mobile_open() {
                 div { class: MOBILE_MENU_STY,
                     for item in NAV_ITEMS.iter() {
@@ -289,16 +293,19 @@ pub fn Layout() -> Element {
                     }
                 }
             }
-
-            // Main content
+            // --------------------------------------------------
+            // main content
+            // --------------------------------------------------
             main { class: MAIN_STY,
                 Outlet::<AdminRoute> {}
             }
-
-            // Toasts (fixed position, renders above everything)
+            // --------------------------------------------------
+            // toast provider: fixed position, renders above all
+            // --------------------------------------------------
             ToastProvider {}
-
-            // Footer
+            // --------------------------------------------------
+            // footer
+            // --------------------------------------------------
             footer { class: FOOTER_STY,
                 div { class: FOOTER_INNER_STY,
                     Link { to: AdminRoute::About, class: FOOTER_LINK_STY, "About OTD" }

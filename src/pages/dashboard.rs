@@ -28,8 +28,8 @@ const STAT_INNER_STY: &str = crate::classes!("flex", "items-center", "gap-3");
 const STAT_ICON_ACCENT_STY: &str =
     crate::classes!("p-2", "rounded-lg", "bg-accent/10", "text-accent");
 
-const STAT_ICON_EMERALD_STY: &str =
-    crate::classes!("p-2", "rounded-lg", "bg-emerald-500/10", "text-emerald-500");
+const STAT_ICON_BLUE_STY: &str =
+    crate::classes!("p-2", "rounded-lg", "bg-blue-500/10", "text-blue-500");
 
 const STAT_ICON_AMBER_STY: &str =
     crate::classes!("p-2", "rounded-lg", "bg-amber-500/10", "text-amber-500");
@@ -107,9 +107,6 @@ const TITLE_ROW_STY: &str = crate::classes!("flex", "items-center", "justify-bet
 
 const UPDATED_AGO_STY: &str = crate::classes!("text-xs", "text-text-muted", "tabular-nums");
 
-// --------------------------------------------------
-// helpers
-// --------------------------------------------------
 /// Formats an uptime duration in seconds into a human-readable string
 fn format_uptime(seconds: u64) -> String {
     let days = seconds / 86400;
@@ -136,21 +133,22 @@ fn activity_status_class(item: &TokenListItem) -> &'static str {
     }
 }
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// Dashboard page with stat cards, quick actions, and recent activity
 pub fn Dashboard() -> Element {
     let mut stats = use_resource(move || async move { links::stats().await });
     let mut activity = use_resource(move || async move { links::list_links().await });
 
-    // Signals for local uptime ticking and "updated ago"
+    // --------------------------------------------------
+    // signals for local uptime ticking and "updated ago"
+    // --------------------------------------------------
     let mut uptime_offset = use_signal(|| 0u64);
     let mut last_server_uptime = use_signal(|| 0u64);
     let mut updated_ago = use_signal(|| 0u64);
 
-    // Auto-refresh stats + activity every 30s
+    // --------------------------------------------------
+    // auto-refresh stats + activity every 30s
+    // --------------------------------------------------
     use_future(move || async move {
         loop {
             #[cfg(feature = "web")]
@@ -161,8 +159,9 @@ pub fn Dashboard() -> Element {
             activity.restart();
         }
     });
-
-    // Tick uptime + updated_ago every 1s
+    // --------------------------------------------------
+    // tick uptime + updated_ago every 1s
+    // --------------------------------------------------
     use_future(move || async move {
         loop {
             #[cfg(feature = "web")]
@@ -173,8 +172,9 @@ pub fn Dashboard() -> Element {
             updated_ago += 1;
         }
     });
-
-    // Sync server uptime when stats load
+    // --------------------------------------------------
+    // sync server uptime when stats load
+    // --------------------------------------------------
     if let Some(Ok(s)) = &*stats.read_unchecked() {
         let server_uptime = s.uptime_seconds;
         if last_server_uptime() != server_uptime {
@@ -194,9 +194,10 @@ pub fn Dashboard() -> Element {
                     }
                 }
 
-                // Stat cards
+                // --------------------------------------------------
+                // stat cards
+                // --------------------------------------------------
                 div { class: STATS_GRID_STY,
-                    // Active links
                     div { class: STAT_CARD_STY,
                         div { class: STAT_INNER_STY,
                             div { class: STAT_ICON_ACCENT_STY,
@@ -208,10 +209,9 @@ pub fn Dashboard() -> Element {
                             }
                         }
                     }
-                    // Total downloads
                     div { class: STAT_CARD_STY,
                         div { class: STAT_INNER_STY,
-                            div { class: STAT_ICON_EMERALD_STY,
+                            div { class: STAT_ICON_BLUE_STY,
                                 DownloadIcon {}
                             }
                             div {
@@ -220,7 +220,6 @@ pub fn Dashboard() -> Element {
                             }
                         }
                     }
-                    // Used links
                     div { class: STAT_CARD_STY,
                         div { class: STAT_INNER_STY,
                             div { class: STAT_ICON_AMBER_STY,
@@ -232,7 +231,6 @@ pub fn Dashboard() -> Element {
                             }
                         }
                     }
-                    // Expired links
                     div { class: STAT_CARD_STY,
                         div { class: STAT_INNER_STY,
                             div { class: STAT_ICON_RED_STY,
@@ -245,10 +243,10 @@ pub fn Dashboard() -> Element {
                         }
                     }
                 }
-
-                // Below stats: quick actions + recent activity
+                // --------------------------------------------------
+                // quick actions + uptime and recent activity
+                // --------------------------------------------------
                 div { class: SECTION_GRID_STY,
-                    // Left column: Quick Actions + Uptime
                     div {
                         div { class: "card",
                             h2 { class: SECTION_HEADING_STY, "Quick Actions" }
@@ -270,8 +268,6 @@ pub fn Dashboard() -> Element {
                             }
                         }
                     }
-
-                    // Right columns: Recent Activity
                     div { class: "lg:col-span-2",
                         div { class: "card p-0 overflow-hidden",
                             div { class: ACTIVITY_HEADER_STY,
@@ -284,7 +280,6 @@ pub fn Dashboard() -> Element {
                                         div { class: ACTIVITY_LIST_STY,
                                             for item in recent {
                                                 div { key: "{item.token}", class: ACTIVITY_ROW_STY,
-                                                    // Status icon
                                                     if item.expired {
                                                         ClockIcon { class: "w-4 h-4 text-danger shrink-0".to_string() }
                                                     } else if item.remaining_downloads == 0 {
@@ -292,11 +287,9 @@ pub fn Dashboard() -> Element {
                                                     } else {
                                                         DownloadIcon { class: "w-4 h-4 text-success shrink-0".to_string() }
                                                     }
-                                                    // Name
                                                     span { class: "{ACTIVITY_NAME_STY} {activity_status_class(item)}",
                                                         "{item.name}"
                                                     }
-                                                    // Downloads
                                                     span { class: ACTIVITY_META_STY,
                                                         "{item.download_count}/{item.max_downloads}"
                                                     }

@@ -35,9 +35,6 @@ const FILE_SIZE_STY: &str =
 pub const SKELETON_ICON_STY: &str = crate::classes!("w-4", "h-4", "bg-border", "rounded");
 pub const SKELETON_TEXT_STY: &str = crate::classes!("h-4", "w-32", "bg-border", "rounded");
 
-// --------------------------------------------------
-// helpers
-// --------------------------------------------------
 /// Formats a byte count into a human-readable size string
 #[inline]
 fn format_size(bytes: u64) -> String {
@@ -52,9 +49,6 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-// --------------------------------------------------
-// component
-// --------------------------------------------------
 #[component]
 /// A single row in the file browser listing
 pub fn FileRow(
@@ -74,7 +68,9 @@ pub fn FileRow(
 
     rsx! {
         div { class: FILE_ROW_STY,
-            // Checkbox (not for parent dir)
+            // --------------------------------------------------
+            // checkbox (not shown for parent dir entry)
+            // --------------------------------------------------
             if !is_parent {
                 input {
                     r#type: "checkbox",
@@ -95,15 +91,17 @@ pub fn FileRow(
             } else {
                 div { class: "w-4" }
             }
-
-            // Icon
+            // --------------------------------------------------
+            // icon
+            // --------------------------------------------------
             if is_dir {
                 FolderIcon {}
             } else {
                 FileIcon {}
             }
-
-            // Name
+            // --------------------------------------------------
+            // name
+            // --------------------------------------------------
             if is_dir {
                 span {
                     class: FILE_NAME_DIR_STY,
@@ -122,8 +120,9 @@ pub fn FileRow(
             } else {
                 span { class: FILE_NAME_STY, "{name}" }
             }
-
-            // Size
+            // --------------------------------------------------
+            // size
+            // --------------------------------------------------
             if let Some(bytes) = size {
                 span { class: FILE_SIZE_STY, "{format_size(bytes)}" }
             }

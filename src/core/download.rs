@@ -19,9 +19,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-// --------------------------------------------------
-// types
-// --------------------------------------------------
 /// Query parameters extracted from the download URL (`?k=<token>`)
 #[derive(serde::Deserialize)]
 pub(crate) struct DownloadParams {
