@@ -1,18 +1,22 @@
 {
-  "lsp": {
-    "rust-analyzer": {
-      "initialization_options": {
-        "check": {
-          "command": "clippy",
-          "extraArgs": [
-            "--",
-            "-Dclippy::unwrap_used",
-            "-Dclippy::expect_used",
-            "-Dclippy::panic",
-          ],
-          "checkOnSave": true,
+    "lsp": {
+        "rust-analyzer": {
+            "initialization_options": {
+                "cargo": {
+                    "features": ["server", "parallel"],
+                    // "features": ["web"],
+                },
+                "check": {
+                    "command": "clippy",
+                    "extraArgs": [
+                        "--",
+                        "-Dclippy::unwrap_used",
+                        "-Dclippy::expect_used",
+                        "-Dclippy::panic",
+                    ],
+                    "checkOnSave": true,
+                },
+            },
         },
-      },
     },
-  },
 }

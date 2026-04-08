@@ -1,10 +1,12 @@
 admin_port = 15204
-download_port = 15205
 admin_host = "0.0.0.0"
+# admin_host = "127.0.0.1"
 # admin_token = "1234"
 admin_password = "admin2"
+download_port = 15205
 download_host = "192.168.1.75"
+# download_host = "0.0.0.0"
 base_path = "/mnt/arpadnas/vault"
-buffer_size = 8192
-max_request_size = 10485760
 enable_https = false
+# buffer_size = 8192
+# max_request_size = 10485760

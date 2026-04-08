@@ -1,5 +1,6 @@
 **/target
-static/style.css
 **/*.tar
 .claude
+.vscode
 logs/
+**/_*/

@@ -1,14 +1,50 @@
-.DEFAULT_GOAL := run
+.DEFAULT_GOAL := serve
 .PHONY: css build docker
 
+# --------------------------------------------------
+# mode: debug (default) or release
+# --------------------------------------------------
+MODE ?= debug
+
+# --------------------------------------------------
+# args
+# --------------------------------------------------
+ADDR := 0.0.0.0
+
+# --------------------------------------------------
+# flags
+# --------------------------------------------------
+ifeq ($(MODE),release)
+	CSS_FLAGS := --optimize --minify
+	BUILD_FLAGS := --release
+else
+	CSS_FLAGS :=
+	BUILD_FLAGS :=
+endif
+
+# --------------------------------------------------
+# css
+# --------------------------------------------------
 css:
-	tailwindcss -i static/input.css -o static/style.css --minify
+	tailwindcss -i "./input.css" -o "./assets/tailwind.css" $(CSS_FLAGS)
 
+# --------------------------------------------------
+# build
+# --------------------------------------------------
 build: css
-	cargo build --release
+	dx build --fullstack $(BUILD_FLAGS)
 
-run: build
-	cargo run --release
+# --------------------------------------------------
+# serve
+# --------------------------------------------------
+serve: build
+	dx serve --addr "$(ADDR)"
+
+# --------------------------------------------------
+# bundle
+# --------------------------------------------------
+bundle:
+	bash scripts/bundle.sh
 
 docker:
 	bash scripts/build.sh
