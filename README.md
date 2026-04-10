@@ -6,17 +6,17 @@ Generate expiring, limited-use download links for files on your machine. Built w
 
 ## Features
 
-- **Dual-port architecture** — admin UI and download server run on separate ports for network isolation
-- **One-time / N-time downloads** — configurable per-link download limits
-- **Link expiration** — optional time-based expiry on generated links
-- **Multi-file ZIP** — select multiple files and serve them as a single ZIP archive
-- **File browser UI** — web-based file browser with search and multi-select
-- **Bearer token auth** — protect the admin interface with an API token
-- **Session auth** — password-based login for external access with HTTP-only cookies
-- **Loopback bypass** — localhost access skips authentication entirely
-- **HTTPS/TLS** — optional TLS termination with configurable cert/key paths
-- **Docker support** — multi-stage Dockerfile and docker-compose included
-- **Parallel directory traversal** — optional `rayon`/`jwalk`-based parallel file walking
+- **Dual-port architecture** - admin UI and download server run on separate ports for network isolation
+- **One-time / N-time downloads** - configurable per-link download limits
+- **Link expiration** - optional time-based expiry on generated links
+- **Multi-file archives** - select multiple files and serve them as ZIP or tar.gz
+- **File browser UI** - web-based file browser with search and multi-select
+- **Session auth** - argon2 password hashing with server-side sessions and HTTP-only cookies
+- **HTTPS by default** - generated download URLs use HTTPS; disable with `--no-https`
+- **Docker support** - multi-stage Dockerfile and docker-compose included
+- **Parallel directory traversal** - optional `rayon`/`jwalk`-based parallel file walking
+- **Persistent state** - links survive restarts via per-link JSON persistence
+- **Settings API** - change password and download URL at runtime without restarting
 
 ## Quick Start
 
@@ -24,7 +24,7 @@ Generate expiring, limited-use download links for files on your machine. Built w
 cargo run
 ```
 
-On first run, a default `otd-config.toml` is generated in the current directory. The admin interface is available at `http://127.0.0.1:15204` and the download server listens on `http://0.0.0.0:15205`.
+The admin interface is available at `http://127.0.0.1:15204` and the download server listens on `http://0.0.0.0:15205`. No configuration file is needed - all defaults are sensible out of the box.
 
 ## Installation
 
@@ -52,35 +52,68 @@ docker compose up -d
 
 ## Configuration
 
-All settings are read from `otd-config.toml`. A default config file is generated on first run if none exists. The config file location can be overridden with the `OTD_CONFIG_FILE` environment variable.
+Configuration is split into two categories: **CLI flags** (ephemeral, set at startup) and **persistent settings** (saved to disk, changed at runtime via the admin UI or API).
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `admin_port` | `u16` | `15204` | Port for the admin interface |
-| `admin_host` | `String` | `"127.0.0.1"` | Bind address for admin interface |
-| `download_port` | `u16` | `15205` | Port for the download server |
-| `download_host` | `String` | `"0.0.0.0"` | Bind address for download server |
-| `download_base_url` | `Option<String>` | `None` | Custom base URL for generated download links |
-| `base_path` | `String` | Current directory | Root directory for file serving |
-| `buffer_size` | `usize` | `8192` | Buffer size in bytes for HTTP request reading |
-| `max_request_size` | `usize` | `10485760` | Maximum request body size in bytes (10 MB) |
-| `enable_https` | `bool` | `false` | Enable HTTPS/TLS |
-| `cert_path` | `Option<String>` | `None` | Path to TLS certificate file |
-| `key_path` | `Option<String>` | `None` | Path to TLS private key file |
-| `admin_token` | `Option<String>` | `None` | Bearer token for admin API authentication |
-| `admin_password` | `Option<String>` | `None` | Password for web-based admin login |
-| `log_level` | `Option<String>` | `None` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
-| `log_file` | `Option<String>` | `None` | Path to log file (parent directory must exist) |
+### CLI Flags
+
+All server settings are passed as command-line arguments. Run `otd --help` for the full list.
+
+```
+USAGE: otd [OPTIONS]
+
+OPTIONS:
+    --admin-host <HOST>         Admin interface bind address [default: 127.0.0.1]
+    --admin-port <PORT>         Admin interface port [default: 15204]
+    --download-host <HOST>      Download server bind address [default: 0.0.0.0]
+    --download-port <PORT>      Download server port [default: 15205]
+    --no-https                  Disable HTTPS in generated download URLs
+    --base-path <PATH>          Root directory for file serving [default: current directory]
+    --log-level <LEVEL>         Log level: trace, debug, info, warn, error [default: info]
+    --log-file <PATH>           Log file path (in addition to stdout)
+    -h, --help                  Print help
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--admin-host` | `127.0.0.1` | Bind address for the admin interface. Loopback by default to prevent external access |
+| `--admin-port` | `15204` | Port for the admin interface and API |
+| `--download-host` | `0.0.0.0` | Bind address for the download server. Binds all interfaces so recipients can reach it |
+| `--download-port` | `15205` | Port for serving file downloads |
+| `--no-https` | *(HTTPS enabled)* | Disables the `https://` scheme in generated download URLs. Use when running behind a reverse proxy that terminates TLS |
+| `--base-path` | Current directory | Root directory for the file browser. All paths are sandboxed to this directory |
+| `--log-level` | `info` | Minimum log level. Overridden by the `OTD_LOG` environment variable |
+| `--log-file` | `None` | Write logs to this file in addition to stdout. Overridden by `OTD_LOG_FILE` |
+
+### Persistent Settings
+
+Persistent settings are stored in `$XDG_DATA_HOME/otd/config.toml` (typically `~/.local/share/otd/config.toml`). These are managed through the admin UI settings page or the settings API - **do not edit this file manually while the server is running**.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `admin_password_hash` | `Option<String>` | `None` | Argon2 hash of the admin password. `None` means no password is required |
+| `download_base_url` | `Option<String>` | `None` | Custom base URL for generated download links. When unset, derived from `--download-host` and `--download-port` |
+
+The file is written atomically (via `.tmp` rename) whenever settings change.
+
+### Data Directory
+
+All persistent data lives under the OTD data directory:
+
+```
+~/.local/share/otd/
+  config.toml          # Persistent settings (password hash, download URL)
+  links/               # Per-link JSON files for state persistence
+    <token>.json
+```
+
+The data directory is determined by `$XDG_DATA_HOME/otd/` or falls back to `$HOME/.local/share/otd/`.
 
 ## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
-| `OTD_CONFIG_FILE` | Override config file path (default: `otd-config.toml` in current directory) |
-| `OTD_BASE_PATH` | Override `base_path` from config |
-| `OTD_LOG` | Override `log_level` from config |
-
-Environment variables take precedence over config file values.
+| `OTD_LOG` | Override `--log-level` (takes precedence over CLI) |
+| `OTD_LOG_FILE` | Override `--log-file` (takes precedence over CLI) |
 
 ## API Reference
 
@@ -88,17 +121,21 @@ Environment variables take precedence over config file values.
 
 | Method | Path | Purpose | Auth |
 |--------|------|---------|------|
-| `GET` | `/` | Web interface | Yes |
-| `GET` | `/about` | About page | Yes |
-| `GET` | `/login` | Login form | No |
-| `POST` | `/login` | Submit login | No |
-| `GET` | `/logout` | Clear session | Session |
-| `GET` | `/api/browse?path=<path>` | Browse files in directory | Yes |
+| `GET` | `/` | Web interface (SPA) | Yes |
+| `POST` | `/api/auth/login` | Authenticate and get session cookie | No |
+| `POST` | `/api/auth/logout` | Invalidate session | Session |
+| `GET` | `/api/theme` | Get theme preference | No |
+| `PUT` | `/api/theme` | Set theme preference | Yes |
 | `GET` | `/api/stats` | Dashboard statistics | Yes |
+| `GET` | `/api/browse?path=<path>` | Browse files in directory | Yes |
 | `GET` | `/api/links` | List active download links | Yes |
-| `POST` | `/api/generate` | Generate download link | Yes |
-| `POST` | `/api/links/bulk-delete` | Bulk delete links by filter | Yes |
-| `DELETE` | `/api/links/<token>` | Delete specific link | Yes |
+| `POST` | `/api/links` | Generate download link | Yes |
+| `DELETE` | `/api/links/{token}` | Delete specific link | Yes |
+| `POST` | `/api/links/{token}/revive` | Revive expired/used link | Yes |
+| `DELETE` | `/api/links?filter=<filter>` | Bulk delete links (used, expired, all) | Yes |
+| `GET` | `/api/settings` | Get persistent settings | Yes |
+| `PUT` | `/api/settings` | Update persistent settings | Yes |
+| `POST` | `/api/settings/password` | Change admin password | Yes |
 
 ### Download Server (default: `0.0.0.0:15205`)
 
@@ -108,38 +145,38 @@ Environment variables take precedence over config file values.
 
 ## Authentication
 
-otd uses a layered authentication model:
+otd uses session-based authentication with argon2 password hashing:
 
-1. **Bearer token** — If `admin_token` is set, all admin requests must include an `Authorization: Bearer <token>` header. This takes priority over other auth methods.
+1. **No password (default)** - When no password is configured (`admin_password_hash` is `None`), all requests bypass authentication. This is the default for local development.
 
-2. **Loopback bypass** — Requests from `127.0.0.1` or `::1` skip authentication entirely. This is the default mode since `admin_host` binds to `127.0.0.1`.
+2. **Password protection** - Set a password via the admin UI settings page (`POST /api/settings/password`). Once set, all admin requests (except login and theme) require a valid session cookie.
 
-3. **Session login** — When accessed from a non-loopback address and `admin_password` is configured, users are redirected to `/login`. After entering the correct password, a session cookie is issued (valid for 24 hours, `HttpOnly`, `SameSite=Strict`).
+3. **Session cookies** - After successful login, the server issues a random 32-byte session token stored in an `HttpOnly`, `Secure`, `SameSite=Strict` cookie. Sessions are validated server-side and expire after 24 hours. Expired sessions are cleaned up automatically every 5 minutes.
 
-If accessed externally without `admin_password` configured, a `403 Forbidden` is returned.
+4. **Password changes** - Changing the password invalidates all active sessions, forcing every client to re-authenticate.
 
 ## Security
 
-- **Path traversal protection** — All file paths are canonicalized and verified to remain within `base_path`. Requests containing `../` sequences are blocked after symlink resolution.
-- **Symlink escape blocking** — Symlinks are resolved via `canonicalize()` before the containment check. Symlinks pointing outside `base_path` are rejected.
-- **Loopback-only admin** — The admin interface binds to `127.0.0.1` by default, preventing external access unless explicitly configured.
-- **Port isolation** — Admin and download interfaces run on separate ports, allowing firewall rules to restrict admin access independently.
-- **Request size limits** — Configurable maximum request size (default 10 MB).
-- **Secure cookies** — Session cookies use `HttpOnly` and `SameSite=Strict` flags.
+- **Path traversal protection** - All file paths are canonicalized and verified to remain within `--base-path`. Requests containing `../` sequences are blocked after symlink resolution
+- **Symlink escape blocking** - Symlinks are resolved via `canonicalize()` before the containment check. Symlinks pointing outside `--base-path` are rejected
+- **Loopback-only admin** - The admin interface binds to `127.0.0.1` by default, preventing external access unless explicitly configured
+- **Port isolation** - Admin and download interfaces run on separate ports, allowing firewall rules to restrict admin access independently
+- **Argon2 password hashing** - Admin passwords are stored as argon2 hashes, never in plaintext
+- **Secure cookies** - Session cookies use `HttpOnly`, `Secure`, and `SameSite=Strict` flags
+- **Atomic config writes** - Persistent settings are written via `.tmp` rename to prevent corruption
 
 ## Cargo Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `parallel` | Yes | Enables parallel directory traversal via `rayon` and `jwalk` |
-| `doc-tests` | No | Exposes private items for doc-test compilation via `visibility` |
+| `parallel` | No | Enables parallel directory traversal via `rayon` and `jwalk`, and parallel argon2 hashing |
 
-To build without parallel traversal:
+To build with parallel support:
 
 ```sh
-cargo build --release --no-default-features
+cargo build --release --features parallel
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

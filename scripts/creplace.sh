@@ -19,7 +19,7 @@ set -euo pipefail
 # --------------------------------------------------
 # file extensions to search for
 # --------------------------------------------------
-FILE_EXTENSIONS=("rs" "sh" "html")
+FILE_EXTENSIONS=("rs" "sh" "html" "md" "ts" "svelte")
 name_expr=()
 for ext in "${FILE_EXTENSIONS[@]}"; do
     if [ ${#name_expr[@]} -gt 0 ]; then
@@ -34,10 +34,10 @@ done
 # * perform the replacements using `sed`
 # --------------------------------------------------
 LC_ALL=en_US.UTF-8 find . -type f \( "${name_expr[@]}" \) \
-  ! -path "*/vendor/*" ! -path "*/target/*" \
-  -exec sed -i \
+    ! -path "*/vendor/*" ! -path "*/target/*" \
+    -exec sed -i \
     -e "s/'/'/g" \
     -e "s/'/'/g" \
     -e 's/[""]/"/g' \
     -e $'s/\xE2\x80\x94/-/g' \
-  {} +
+    {} +

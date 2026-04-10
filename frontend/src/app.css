@@ -1,0 +1,62 @@
+@import "tailwindcss";
+@theme {
+    /* -------------------------------------------------- */
+    /* surface colors */
+    /* -------------------------------------------------- */
+    --color-surface: var(--otd-surface);
+    --color-surface-alt: var(--otd-surface-alt);
+    --color-surface-hover: var(--otd-surface-hover);
+    --color-surface-active: var(--otd-surface-active);
+    /* -------------------------------------------------- */
+    /* border */
+    /* -------------------------------------------------- */
+    --color-border: var(--otd-border);
+    --color-border-light: var(--otd-border-light);
+    /* -------------------------------------------------- */
+    /* text */
+    /* -------------------------------------------------- */
+    --color-text: var(--otd-text);
+    --color-text-muted: var(--otd-text-muted);
+    --color-text-inverse: var(--otd-text-inverse);
+    /* -------------------------------------------------- */
+    /* accent */
+    /* -------------------------------------------------- */
+    --color-accent: var(--otd-accent);
+    --color-accent-hover: var(--otd-accent-hover);
+    --color-accent-muted: var(--otd-accent-muted);
+    /* -------------------------------------------------- */
+    /* status */
+    /* -------------------------------------------------- */
+    --color-success: var(--otd-success);
+    --color-warning: var(--otd-warning);
+    --color-danger: var(--otd-danger);
+    --color-info: var(--otd-info);
+}
+/* -------------------------------------------------- */
+/* font - overwrite tailwind */
+/* -------------------------------------------------- */
+@font-face {
+    font-family: "Inconsolata";
+    src: url("./assets/Inconsolata-VariableFont_wdth,wght.ttf") format("truetype");
+    font-weight: 200 900;
+    font-stretch: 50% 200%;
+    font-display: swap;
+}
+:root {
+    --default-mono-font-family: "Inconsolata", monospace;
+}
+html {
+    font-family: "Inconsolata", monospace;
+    font-optical-sizing: auto;
+    font-style: normal;
+}
+body {
+    /* -------------------------------------------------- */
+    /* body color, text color, and transition */
+    /* -------------------------------------------------- */
+    background-color: var(--otd-surface);
+    color: var(--otd-text);
+    transition:
+        background-color 0s,
+        color 0s;
+}
