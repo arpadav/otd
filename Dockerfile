@@ -1,32 +1,44 @@
 # --------------------------------------------------
-# build stage
+# stage 1: build frontend
 # --------------------------------------------------
-FROM rust:1.94-slim AS builder
-WORKDIR /build
+FROM node:22-slim AS frontend
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
 
 # --------------------------------------------------
-# cache deps
+# stage 2: build rust binary
 # --------------------------------------------------
+FROM rust:1.87-slim AS backend
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# cache deps
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main(){}" > src/main.rs
-RUN cargo build --release
+RUN mkdir -p src && echo "fn main(){}" > src/main.rs
+RUN cargo build --release || true
 RUN rm -rf src
 
-# --------------------------------------------------
-# copy real source
-# --------------------------------------------------
-COPY . .
+# copy frontend build output and real source
+COPY --from=frontend /build/frontend/build frontend/build/
+COPY src/ src/
+
 RUN cargo build --release
 
 # --------------------------------------------------
-# runtime stage
+# stage 3: runtime
 # --------------------------------------------------
 FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /build/target/release/otd /app/otd
-RUN chmod +x /app/otd
 
-# --------------------------------------------------
-# entry
-# --------------------------------------------------
+COPY --from=backend /build/target/release/otd /app/otd
+
+EXPOSE 15204
+EXPOSE 15205
 CMD ["./otd"]
