@@ -1,0 +1,10 @@
+{
+    "theme": {
+        "name": ["forest", "clay", "ocean", "stone", "sage", "dusk"],
+        "mode": ["light", "dark"]
+    },
+    "link_statuses": ["active", "used", "expired", "preparing", "failed"],
+    "archive_formats": ["zip", "tar_gz", "tar"],
+    "expiry_units": ["minutes", "hours", "days", "weeks", "months"],
+    "bulk_delete_filters": ["used", "expired", "all"]
+}

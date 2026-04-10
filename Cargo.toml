@@ -8,33 +8,53 @@ license = "MIT"
 publish = false
 
 [dependencies]
-cfg-if = "~1.0"
-flate2 = "~1.1"
-httparse = "~1.10"
-notify = "~8.0"
-itertools = "~0.13"
-jwalk = { version = "~0.8", optional = true }
-rayon = { version = "~1.10", optional = true }
-serde = { version = "~1.0", features = ["derive"] }
-serde_json = "~1.0"
-smol = "~2.0"
-tar = "~0.4"
-thiserror = "~1.0"
-toml = "~1.0"
-tracing = "~0.1"
-tracing-appender = "~0.2"
-tracing-subscriber = { version = "~0.3", features = ["env-filter"] }
-uuid = { version = "~1.17", features = ["v4"] }
-visibility = { version = "~0.1", optional = true }
-walkdir = "~2.5"
-zip = "~4.3"
-
-[dev-dependencies]
-smol-macros = "~0.1"
-macro_rules_attribute = "~0.2"
-tempfile = "~3.14"
+argon2 = "0.6.0-rc.8"
+# argon2 = { version = "0.6.0-rc.8", default-features = false, features = ["alloc", "getrandom", "password-hash"]}
+clap = { version = "4", features = ["derive"] }
+axum = "^0.8"
+axum-extra = { version = "^0.10", features = ["cookie"] }
+base64 = "^0.22"
+blake3 = { version = "^1.8" }
+flate2 = "^1.1"
+hex = "^0.4"
+itertools = "^0.14"
+jwalk = { version = "^0.8", optional = true }
+mime_guess = "^2.0"
+rand = "^0.10"
+rayon = { version = "^1.10", optional = true }
+ring = "^0.17"
+rust-embed = { version = "^8.0", features = ["interpolate-folder-path"] }
+serde = { version = "^1.0", features = ["derive"] }
+serde_json = "^1.0"
+tar = "^0.4"
+thiserror = "^2.0"
+tokio = { version = "^1.48", features = ["full"] }
+toml = "^1.0"
+tower-http = { version = "^0.6", features = ["compression-gzip"] }
+tracing = "^0.1"
+tracing-appender = "^0.2"
+tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
+uuid = { version = "^1.17", features = ["v4"] }
+walkdir = "^2.5"
+zip = "^8.5"
 
 [features]
-default = [ "parallel" ]
-parallel = [ "rayon", "jwalk" ]
-doc-tests = [ "visibility" ]
+parallel = ["dep:rayon", "dep:jwalk", "blake3/rayon", "argon2/parallel"]
+
+[dev-dependencies]
+tempfile = "^3.14"
+
+[build-dependencies]
+const-str = "^1.1"
+convert_case = "^0.11"
+proc-macro2 = "^1.0"
+quote = "^1.0"
+serde_json = "^1.0"
+
+[profile.release]
+opt-level = 'z'
+debug = false
+lto = true
+codegen-units = 1
+panic = "abort"
+incremental = false
