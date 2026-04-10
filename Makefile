@@ -1,50 +1,62 @@
-.DEFAULT_GOAL := serve
-.PHONY: css build docker
+.DEFAULT_GOAL := build
+.PHONY: frontend backend build serve bundle docker clean
 
 # --------------------------------------------------
 # mode: debug (default) or release
 # --------------------------------------------------
 MODE ?= debug
 
-# --------------------------------------------------
-# args
-# --------------------------------------------------
-ADDR := 0.0.0.0
-
-# --------------------------------------------------
-# flags
-# --------------------------------------------------
 ifeq ($(MODE),release)
-	CSS_FLAGS := --optimize --minify
-	BUILD_FLAGS := --release
+	CARGO_FLAGS := --release
 else
-	CSS_FLAGS :=
-	BUILD_FLAGS :=
+	CARGO_FLAGS :=
 endif
 
 # --------------------------------------------------
-# css
+# frontend: build sveltekit spa
 # --------------------------------------------------
-css:
-	tailwindcss -i "./input.css" -o "./assets/tailwind.css" $(CSS_FLAGS)
+frontend:
+	cd frontend && npm i --no-audit --no-fund && npm run build
 
 # --------------------------------------------------
-# build
+# backend: build rust binary (depends on frontend)
 # --------------------------------------------------
-build: css
-	dx build --fullstack $(BUILD_FLAGS)
+backend: frontend
+	cargo build $(CARGO_FLAGS)
 
 # --------------------------------------------------
-# serve
+# builds both frontend and backend
 # --------------------------------------------------
-serve: build
-	dx serve --addr "$(ADDR)"
+build: frontend backend
 
 # --------------------------------------------------
-# bundle
+# serve: dev mode - run vite and cargo concurrently
+# --------------------------------------------------
+serve:
+	@echo "Starting dev servers..."
+	@bash -c '\
+	trap "pkill -P $$$$ 2>/dev/null; kill -- -$$$$ 2>/dev/null" INT TERM EXIT; \
+	cd frontend && npm run dev & \
+	cargo run & \
+	wait'
+
+# --------------------------------------------------
+# bundle: create distributable tarball
 # --------------------------------------------------
 bundle:
 	bash scripts/bundle.sh
 
+# --------------------------------------------------
+# docker: build docker image
+# --------------------------------------------------
 docker:
-	bash scripts/build.sh
+	bash scripts/docker-build.sh
+
+# --------------------------------------------------
+# clean: remove build artifacts
+# --------------------------------------------------
+clean:
+	cargo clean
+	rm -rf frontend/build frontend/.svelte-kit frontend/node_modules
+
+reserve: clean build serve

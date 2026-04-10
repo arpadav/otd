@@ -3,16 +3,22 @@
 //! This module defines the server-side runtime data structures:
 //! [`DownloadItem`], [`ArchiveState`], and [`AppState`]
 //!
-//! Request/response DTO types have moved to [`crate::requests`]
-//!
 //! Author: aav
+
+// --------------------------------------------------
+// mods
+// --------------------------------------------------
+mod persisted;
+
+// --------------------------------------------------
+// re-exports
+// --------------------------------------------------
+pub(crate) use persisted::PersistedDownloadItem;
+
 // --------------------------------------------------
 // local
 // --------------------------------------------------
-use crate::{
-    core::archive::{ARCHIVE_CACHE_DIR, CompressionType},
-    requests::PersistedDownloadItem,
-};
+use crate::archive::{ARCHIVE_CACHE_DIR, CompressionType};
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -30,25 +36,17 @@ use tokio::sync::RwLock;
 // --------------------------------------------------
 // constants
 // --------------------------------------------------
-#[cfg(feature = "server")]
 /// Per-link storage subdirectory within the data directory
 const LINKS_DIR: &str = "links";
 
-#[cfg(feature = "server")]
-#[derive(Debug, Clone)]
-/// Tracks the lifecycle of an archive for a download item
-pub(crate) enum ArchiveState {
-    /// Single-file download - no archive needed
-    NotNeeded,
-    /// Archive is being created in the background (tracks when preparation started)
-    Preparing(std::time::Instant),
-    /// Archive is ready and cached at the given path
-    Ready(PathBuf),
-    /// Archive creation failed
-    Failed(String),
-}
-
-/// Global app state, set once during server init
+// --------------------------------------------------
+// statics
+// --------------------------------------------------
+/// Global app state, initialized once on first access during server startup
+///
+/// Forces creation of the archive cache directory and data directory, then
+/// attempts to load previously persisted links from disk. Falls back to an
+/// empty state if no valid persisted data is found
 pub(crate) static APP_STATE: LazyLock<Arc<AppState>> = LazyLock::new(|| {
     tracing::info!("starting init app state");
     std::fs::create_dir_all(ARCHIVE_CACHE_DIR).ok();
@@ -73,10 +71,44 @@ pub(crate) static APP_STATE: LazyLock<Arc<AppState>> = LazyLock::new(|| {
     state
 });
 
-/// Spawns background tasks that depend on [`APP_STATE`]
+#[derive(Debug, Clone)]
+/// Tracks the preparation lifecycle of an archive for a multi-file download item
+pub(crate) enum ArchiveState {
+    /// Single-file download - no archive needed
+    NotNeeded,
+    /// Archive is being created in the background (tracks when preparation started)
+    Preparing(std::time::Instant),
+    /// Archive is ready and cached at the given path
+    Ready(PathBuf),
+    /// Archive creation failed
+    Failed(String),
+    /// Archive is used up, can be removed
+    Used,
+}
+
+impl From<&ArchiveState> for crate::shared::LinkStatuses {
+    #[inline]
+    fn from(state: &ArchiveState) -> Self {
+        match state {
+            ArchiveState::NotNeeded | ArchiveState::Ready(_) => Self::Active,
+            ArchiveState::Preparing(_) => Self::Preparing,
+            ArchiveState::Failed(_) => Self::Failed,
+            ArchiveState::Used => Self::Used,
+        }
+    }
+}
+
+/// Spawns all background tasks that depend on [`APP_STATE`]
 ///
-/// Must be called **after** `LazyLock::force(&APP_STATE)` to avoid
-/// deadlock -- the tasks reference the global directly
+/// Must be called **after** `LazyLock::force(&APP_STATE)` to avoid a deadlock
+/// - the spawned tasks reference the global directly and would re-enter the
+///   `LazyLock` initializer if called before it completes
+///
+/// Spawns the following tasks:
+/// * Archive re-creation for active multi-file links loaded from disk
+/// * State persistence loop that flushes dirty state to disk every second
+/// * Health check loop that removes stale and expired archives from the cache
+/// * Session cleanup task that removes expired auth sessions
 pub(crate) fn spawn_background_tasks() {
     // --------------------------------------------------
     // re-trigger archive creation for active multi-file links
@@ -93,7 +125,7 @@ pub(crate) fn spawn_background_tasks() {
                         .is_none_or(|e| std::time::Instant::now() < e)
             })
             .for_each(|(token, item)| {
-                crate::core::archive::spawn_archive_creation(
+                crate::archive::spawn_archive_creation(
                     token.clone(),
                     item.paths.clone(),
                     item.compression,
@@ -123,16 +155,20 @@ pub(crate) fn spawn_background_tasks() {
     // health check loop - cleans stale/expired archives
     // --------------------------------------------------
     tokio::spawn(async {
-        crate::core::health::health_check_loop().await;
+        crate::health::health_check_loop().await;
     });
+    // --------------------------------------------------
+    // session cleanup loop - removes expired sessions
+    // --------------------------------------------------
+    crate::auth::spawn_session_cleanup();
 }
 
-#[cfg(feature = "server")]
 #[derive(Debug)]
-/// Represents a downloadable item with one or more files/folders
+/// Represents a downloadable item associated with a unique token
 ///
-/// Each download item is associated with a unique token and can contain
-/// multiple paths that will be served as a single download (zip for multiple items)
+/// Each item tracks one or more source paths, download count, expiry, and the
+/// state of its backing archive. Multi-file items are served as a single
+/// compressed archive; single-file items are streamed directly
 pub(crate) struct DownloadItem {
     /// List of file/folder paths included in this download
     pub(crate) paths: Vec<PathBuf>,
@@ -166,7 +202,6 @@ pub(crate) struct DownloadItem {
     pub(crate) active_serving: AtomicU32,
 }
 
-#[cfg(feature = "server")]
 /// [`DownloadItem`] implementation
 impl DownloadItem {
     #[inline(always)]
@@ -192,25 +227,39 @@ impl DownloadItem {
             == 0
     }
 
-    /// Removes the archive cache file from disk if no download is in progress
+    /// Removes the archive cache file from disk if no download is currently in progress
     ///
-    /// # Returns
+    /// Checks [`can_remove_cache`][Self::can_remove_cache] before attempting
+    /// removal. Logs and ignores errors where the file does not exist (already
+    /// cleaned up). Other I/O errors are logged as warnings but do not propagate
     ///
-    /// * `true` if the file was removed or didn't exist
-    /// * `false` if skipped because a download is in progress
+    /// Returns `true` if the file was removed or did not exist, `false` if
+    /// removal was skipped because a download is actively being served
     pub(crate) fn remove_cache_file(&self) -> bool {
+        // --------------------------------------------------
+        // skip removal if a download is in progress - the file
+        // read must complete before the cache can be deleted
+        // --------------------------------------------------
         if !self.can_remove_cache() {
             tracing::debug!("Skipping cache removal: download in progress");
             return false;
         }
-        self.cache_path()
-            .as_ref()
-            .map(crate::core::remove_cache_file);
+        // --------------------------------------------------
+        // remove the cache file if one exists for this item
+        // --------------------------------------------------
+        if let Some(path) = self.cache_path() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => tracing::debug!("Removed cache file {path:?}"),
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    tracing::warn!("Failed to remove cache file {path:?}: {e}");
+                }
+                _ => (),
+            }
+        }
         true
     }
 }
 
-#[cfg(feature = "server")]
 /// [`DownloadItem`] implementation of [`From`] for [`PersistedDownloadItem`]
 impl From<PersistedDownloadItem> for DownloadItem {
     fn from(item: PersistedDownloadItem) -> Self {
@@ -223,7 +272,7 @@ impl From<PersistedDownloadItem> for DownloadItem {
         let is_expired = item.expires_in_seconds == Some(0);
         let archive_state = if !item.is_multi_file || is_used || is_expired {
             // --------------------------------------------------
-            // single-file / used / expired - no achive needed
+            // single-file / used / expired - no archive needed
             // --------------------------------------------------
             tokio::sync::RwLock::new(ArchiveState::NotNeeded)
         } else {
@@ -251,19 +300,12 @@ impl From<PersistedDownloadItem> for DownloadItem {
     }
 }
 
-#[cfg(feature = "server")]
-/// Shared application state containing configuration and active downloads
+/// Shared application state containing all active download links
 ///
-/// This structure is shared between all request handlers and contains the
-/// core application data including active download links and configuration
-///
-/// # Examples
-///
-/// ```rust
-/// use otd::types::AppState;
-///
-/// let state = AppState::new();
-/// ```
+/// Wrapped in an [`Arc`] and stored in [`APP_STATE`], this structure is
+/// shared across all request handlers. All mutable access to `links` goes
+/// through the [`tokio::sync::RwLock`]. The `dirty` flag is set whenever
+/// links change and is cleared by the persistence loop after flushing to disk
 pub struct AppState {
     /// Map of active download tokens to their corresponding items
     pub(crate) links: RwLock<HashMap<String, DownloadItem>>,
@@ -273,7 +315,6 @@ pub struct AppState {
     pub(crate) dirty: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(feature = "server")]
 /// [`AppState`] implementation of [`Default`]
 impl Default for AppState {
     #[inline(always)]
@@ -282,19 +323,10 @@ impl Default for AppState {
     }
 }
 
-#[cfg(feature = "server")]
 /// [`AppState`] implementation
 impl AppState {
     #[inline(always)]
     /// Creates a new application state
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use otd::types::AppState;
-    ///
-    /// let state = AppState::new();
-    /// ```
     pub fn new() -> Self {
         Self {
             links: RwLock::new(HashMap::new()),
@@ -303,7 +335,15 @@ impl AppState {
         }
     }
 
-    /// Creates an `AppState` pre-loaded with persisted links
+    /// Creates an [`AppState`] pre-populated with links loaded from disk
+    ///
+    /// Used during startup when persisted state is successfully restored
+    /// `started_at` is set to `Instant::now()` so uptime reflects the current
+    /// process start, not the time links were originally created
+    ///
+    /// # Arguments
+    ///
+    /// * `links` - The token-to-item map loaded from persisted JSON files
     pub(crate) fn with_links(links: HashMap<String, DownloadItem>) -> Self {
         Self {
             links: RwLock::new(links),
@@ -312,15 +352,26 @@ impl AppState {
         }
     }
 
-    /// Marks the state as dirty so it will be persisted on the next save cycle
+    #[inline(always)]
+    /// Marks the state as dirty so it will be flushed on the next persistence cycle
+    ///
+    /// Uses `Release` ordering so that any preceding writes to `links` are
+    /// visible to the persistence loop when it reads the flag
     pub(crate) fn mark_dirty(&self) {
         self.dirty.store(true, std::sync::atomic::Ordering::Release);
     }
 
-    /// Saves the current token state to disk as individual per-link JSON files
+    /// Persists all active links to disk as individual per-link JSON files
     ///
-    /// Each token is written as `links/<token>.json` via atomic `.tmp` rename
-    /// After writing, orphan files (links no longer in memory) are removed
+    /// Each token is serialized via [`PersistedDownloadItem`] and written
+    /// atomically as `links/<token>.json` using a `.tmp` rename. After
+    /// writing all live links, any orphan `.json` files whose stem is not in
+    /// the current token set are deleted. Memory is always authoritative -
+    /// the `links/` directory is re-created if it was deleted while running
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - The data directory containing the `links/` subdirectory
     pub(crate) async fn save_state(
         &self,
         dir: &std::path::Path,
@@ -372,9 +423,18 @@ impl AppState {
         Ok(())
     }
 
-    /// Loads persisted state from disk, returning the token map
+    /// Loads previously persisted links from disk and returns the token map
     ///
-    /// If `links/` dir exists, reads each `.json` file
+    /// Creates the `links/` subdirectory if it does not exist. Reads every
+    /// `.json` file in that directory, deserializes each as a
+    /// [`PersistedDownloadItem`], converts it to a live [`DownloadItem`], and
+    /// inserts it into the map keyed by the file stem (i.e. the token)
+    /// Malformed files are skipped with a warning. Returns an error if no
+    /// valid link files are found
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - The data directory containing the `links/` subdirectory
     pub(crate) fn load_state(
         dir: &std::path::Path,
     ) -> Result<HashMap<String, DownloadItem>, Box<dyn std::error::Error + Send + Sync>> {

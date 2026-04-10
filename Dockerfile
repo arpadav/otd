@@ -1,60 +1,44 @@
 # --------------------------------------------------
-# build stage
+# stage 1: build frontend
 # --------------------------------------------------
-FROM rust:1.87-slim AS builder
+FROM node:22-slim AS frontend
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# --------------------------------------------------
+# stage 2: build rust binary
+# --------------------------------------------------
+FROM rust:1.87-slim AS backend
 WORKDIR /build
-
-# --------------------------------------------------
-# install system deps for dx cli and wasm target
-# --------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev curl \
+    pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-RUN rustup target add wasm32-unknown-unknown
-RUN cargo install dioxus-cli@0.7.4 --locked
 
-# --------------------------------------------------
-# install tailwindcss standalone cli
-# --------------------------------------------------
-RUN curl -sL https://github.com/nicolo-ribaudo/tailwindcss-cli/releases/latest/download/tailwindcss-linux-x64 -o /usr/local/bin/tailwindcss \
-    && chmod +x /usr/local/bin/tailwindcss
-
-# --------------------------------------------------
-# cache workspace deps
-# --------------------------------------------------
+# cache deps
 COPY Cargo.toml Cargo.lock ./
-COPY crates/otd-tailwind/Cargo.toml crates/otd-tailwind/Cargo.toml
-COPY crates/otd-web/Cargo.toml crates/otd-web/Cargo.toml
-RUN mkdir -p crates/otd-tailwind/src && echo "" > crates/otd-tailwind/src/lib.rs
-RUN mkdir -p crates/otd-web/src && echo "fn main(){}" > crates/otd-web/src/main.rs
-RUN cargo build --release -p otd-web --features server || true
-RUN rm -rf crates/otd-tailwind/src crates/otd-web/src
+RUN mkdir -p src && echo "fn main(){}" > src/main.rs
+RUN cargo build --release || true
+RUN rm -rf src
+
+# copy frontend build output and real source
+COPY --from=frontend /build/frontend/build frontend/build/
+COPY src/ src/
+
+RUN cargo build --release
 
 # --------------------------------------------------
-# copy real source and build
-# --------------------------------------------------
-COPY input.css ./input.css
-COPY crates ./crates
-
-# Generate tailwind CSS
-RUN tailwindcss -i input.css -o crates/otd-web/assets/tailwind.css --optimize --minify
-
-# Build with dx (fullstack: server binary + WASM client)
-RUN cd crates/otd-web && dx build --release --fullstack
-
-# --------------------------------------------------
-# runtime stage
+# stage 3: runtime
 # --------------------------------------------------
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-# Copy the dx build output (server binary + public assets)
-COPY --from=builder /build/target/dx/otd-web/release/web /app
+COPY --from=backend /build/target/release/otd /app/otd
 
-ENV PORT=15204
-ENV IP=0.0.0.0
 EXPOSE 15204
 EXPOSE 15205
-CMD ["./server"]
+CMD ["./otd"]

@@ -3,8 +3,7 @@
         "rust-analyzer": {
             "initialization_options": {
                 "cargo": {
-                    "features": ["server", "parallel"],
-                    // "features": ["web"],
+                    "features": ["parallel"],
                 },
                 "check": {
                     "command": "clippy",
