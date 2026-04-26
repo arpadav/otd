@@ -30,6 +30,7 @@ pub fn router() -> Router {
         // --------------------------------------------------
         .route("/auth/login", post(crate::auth::login))
         .route("/auth/logout", post(crate::auth::logout))
+        .route("/auth/me", get(crate::auth::me))
         // --------------------------------------------------
         // theme
         // --------------------------------------------------

@@ -62,7 +62,11 @@
     }
 
     /**
-     * Changes the admin password
+     * Changes the admin password.
+     *
+     * The server invalidates every other session and issues the caller a
+     * fresh session cookie in the response, so the user stays logged in
+     * here while every other tab/device is forced to re-authenticate.
      */
     async function handleChangePassword() {
         if (newPassword !== confirmPassword) {
@@ -243,8 +247,8 @@
     <div class="bg-surface-alt rounded-xl border border-border p-6 mb-6">
         <h2 class="text-lg font-semibold text-text mb-1">Change Password</h2>
         <p class="text-sm text-text-muted mb-4">
-            Set or update the admin password. All active sessions will be
-            cleared.
+            Set or update the admin password. You will stay logged in here;
+            other tabs and devices will need to sign in again.
         </p>
         <form
             onsubmit={(e) => {

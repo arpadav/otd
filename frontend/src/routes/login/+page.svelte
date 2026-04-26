@@ -51,15 +51,18 @@
 				await goto('/');
 			} else {
 				// --------------------------------------------------
-				// show inline error for invalid credentials
+				// show inline error and clear the field so the user
+				// retypes rather than re-submitting the same wrong value
 				// --------------------------------------------------
 				error = 'Invalid password';
+				password = '';
 			}
 		} catch {
 			// --------------------------------------------------
-			// handle network or unexpected errors
+			// handle network or unexpected errors; clear field too
 			// --------------------------------------------------
 			error = 'Login failed. Please try again.';
+			password = '';
 		} finally {
 			// --------------------------------------------------
 			// always clear the loading indicator

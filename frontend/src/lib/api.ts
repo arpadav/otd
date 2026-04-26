@@ -32,25 +32,37 @@ import type {
  * @param options - Optional `fetch` init overrides (method, body, headers, etc.)
  * @returns The parsed JSON body typed as `T`
  */
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+async function request<T>(
+	url: string,
+	options?: RequestInit & { silent401?: boolean },
+): Promise<T> {
+	// --------------------------------------------------
+	// pull the silent401 flag out of the merged options so
+	// it doesn't get forwarded to fetch as an unknown init
+	// --------------------------------------------------
+	const { silent401, ...fetchOptions } = options ?? {};
 	// --------------------------------------------------
 	// send the fetch request with default credentials
 	// and content-type headers merged over any overrides
 	// --------------------------------------------------
 	const res = await fetch(url, {
 		credentials: 'same-origin',
-		...options,
+		...fetchOptions,
 		headers: {
 			'Content-Type': 'application/json',
-			...options?.headers,
+			...fetchOptions?.headers,
 		},
 	});
 	// --------------------------------------------------
 	// redirect to login on 401 - session is invalid or
-	// the user was never authenticated
+	// the user was never authenticated. callers that need
+	// to handle 401 themselves (e.g. the auth probe) pass
+	// silent401: true to opt out of the auto-redirect
 	// --------------------------------------------------
 	if (res.status === 401) {
-		await goto('/login');
+		if (!silent401) {
+			await goto('/login');
+		}
 		throw new Error('Unauthorized');
 	}
 	// --------------------------------------------------
@@ -96,6 +108,20 @@ export const api = {
 	 */
 	logout(): Promise<LoginResponse> {
 		return request('/api/auth/logout', { method: 'POST' });
+	},
+
+	/**
+	 * Probes the server for current session state.
+	 *
+	 * Returns whether the request carries a valid session and whether the
+	 * server has a password configured at all. Uses `silent401` so that an
+	 * unauthenticated probe does NOT trigger the auto-redirect in the
+	 * request helper - the caller decides what to do with the result.
+	 *
+	 * @returns `{ logged_in, password_required }`
+	 */
+	getMe(): Promise<{ logged_in: boolean; password_required: boolean }> {
+		return request('/api/auth/me', { silent401: true });
 	},
 
 	/**

@@ -52,23 +52,26 @@
     /**
      * Logs the current user out and redirects to the login page
      *
-     * Calls the API logout endpoint, clears the auth store, then navigates
-     * to `/login`. Displays an error toast if the request fails
+     * Clears local auth state immediately so the user is never stuck in a
+     * stale "logged in" state, then fires the API logout best-effort and
+     * navigates to `/login` regardless of whether the request succeeded.
      */
     async function handleLogout() {
         // --------------------------------------------------
-        // attempt logout via API, then clear local auth state
+        // optimistic clear so the UI reflects the intent
+        // even if the network call fails
         // --------------------------------------------------
+        setLoggedIn(false);
         try {
             await api.logout();
-            setLoggedIn(false);
-            await goto("/login");
         } catch {
             // --------------------------------------------------
-            // notify the user if the logout request failed
+            // surface the network failure but still navigate -
+            // the cookie may linger server-side until expiry
             // --------------------------------------------------
-            addToast("Failed to log out", "error");
+            addToast("Logout request failed (logged out locally)", "error");
         }
+        await goto("/login");
     }
 </script>
 

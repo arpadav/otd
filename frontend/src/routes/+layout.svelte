@@ -10,8 +10,14 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import { api } from '$lib/api';
 	import { initTheme, initFromSystem } from '$lib/stores/theme.svelte';
-	import { setLoggedIn } from '$lib/stores/auth.svelte';
+	import {
+		getLoggedIn,
+		getReady,
+		setLoggedIn,
+		setReady,
+	} from '$lib/stores/auth.svelte';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 
 	// --------------------------------------------------
 	// props
@@ -25,17 +31,38 @@
 	/** True when the current route is the login page - used to hide the navbar and footer */
 	let isLoginPage = $derived(page.url.pathname === '/login');
 
+	/** True once the initial probe has resolved - gates rendering of child routes */
+	let ready = $derived(getReady());
+
+	/**
+	 * True if the auth state allows the current route to render.
+	 *
+	 * The login page renders immediately (no probe needed); every other
+	 * route waits for the probe and then renders only when the user is
+	 * confirmed authenticated, otherwise the `$effect` below redirects.
+	 */
+	let canRender = $derived(isLoginPage || (ready && getLoggedIn()));
+
+	// --------------------------------------------------
+	// reactive: redirect unauthenticated users away from
+	// protected routes once the probe has completed
+	// --------------------------------------------------
+	$effect(() => {
+		if (ready && !getLoggedIn() && !isLoginPage) {
+			goto('/login');
+		}
+	});
+
 	// --------------------------------------------------
 	// lifecycle
 	// --------------------------------------------------
 	/**
 	 * Initialises theme and auth state on mount.
 	 *
-	 * Attempts to load the user's saved theme preference from the API.
-	 * Falls back to the system colour-scheme preference if the request fails
-	 * or the user is unauthenticated. Then probes the stats endpoint to
-	 * determine whether a valid session already exists and sets the global
-	 * auth state accordingly.
+	 * Loads the user's saved theme (falling back to system preference) and
+	 * probes `/auth/me` to determine whether a valid session already exists,
+	 * marking the auth store as ready when the probe resolves so gated child
+	 * routes can render or be redirected.
 	 */
 	onMount(async () => {
 		// --------------------------------------------------
@@ -48,13 +75,15 @@
 			initFromSystem();
 		}
 		// --------------------------------------------------
-		// probe auth state via the stats endpoint
+		// probe auth state via the dedicated /me endpoint
 		// --------------------------------------------------
 		try {
-			await api.getStats();
-			setLoggedIn(true);
+			const me = await api.getMe();
+			setLoggedIn(me.logged_in);
 		} catch {
 			setLoggedIn(false);
+		} finally {
+			setReady(true);
 		}
 	});
 </script>
@@ -64,7 +93,9 @@
 		<Navbar />
 	{/if}
 	<main class="flex-1">
-		{@render children()}
+		{#if canRender}
+			{@render children()}
+		{/if}
 	</main>
 	{#if !isLoginPage}
 		<Footer />
