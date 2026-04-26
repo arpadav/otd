@@ -14,13 +14,10 @@ clap = { version = "4", features = ["derive"] }
 axum = "^0.8"
 axum-extra = { version = "^0.10", features = ["cookie"] }
 base64 = "^0.22"
-blake3 = { version = "^1.8" }
 flate2 = "^1.1"
-hex = "^0.4"
 itertools = "^0.14"
 jwalk = { version = "^0.8", optional = true }
 mime_guess = "^2.0"
-rand = "^0.10"
 rayon = { version = "^1.10", optional = true }
 ring = "^0.17"
 rust-embed = { version = "^8.0", features = ["interpolate-folder-path"] }
@@ -30,7 +27,6 @@ tar = "^0.4"
 thiserror = "^2.0"
 tokio = { version = "^1.48", features = ["full"] }
 toml = "^1.0"
-tower-http = { version = "^0.6", features = ["compression-gzip"] }
 tracing = "^0.1"
 tracing-appender = "^0.2"
 tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
@@ -39,7 +35,7 @@ walkdir = "^2.5"
 zip = "^8.5"
 
 [features]
-parallel = ["dep:rayon", "dep:jwalk", "blake3/rayon", "argon2/parallel"]
+parallel = ["dep:rayon", "dep:jwalk", "argon2/parallel"]
 
 [dev-dependencies]
 tempfile = "^3.14"

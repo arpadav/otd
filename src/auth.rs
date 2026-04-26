@@ -10,7 +10,7 @@
 // --------------------------------------------------
 use crate::{
     api::error::ApiError,
-    api::routes::auth::{LoginRequest, LoginResponse},
+    api::routes::auth::{LoginRequest, LoginResponse, MeResponse},
     config,
 };
 
@@ -33,7 +33,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 // constants
 // --------------------------------------------------
 /// Cookie name for the session token
-const COOKIE_NAME: &str = "otd_session";
+pub(crate) const COOKIE_NAME: &str = "otd_session";
 /// Session lifetime in seconds (24 hours)
 const SESSION_MAX_AGE: u64 = 86400;
 /// Admin username for sessions
@@ -105,7 +105,7 @@ fn generate_session_token() -> Result<String, ApiError> {
 /// # Arguments
 ///
 /// * `headers` - The request header map to search
-fn extract_cookie_token(headers: &axum::http::HeaderMap) -> Option<String> {
+pub(crate) fn extract_cookie_token(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -116,12 +116,103 @@ fn extract_cookie_token(headers: &axum::http::HeaderMap) -> Option<String> {
         .map(String::from)
 }
 
+/// Detects whether the original client request was made over HTTPS
+///
+/// Inspects `X-Forwarded-Proto` (set by reverse proxies like nginx/caddy)
+/// and falls back to the request URI scheme when terminating TLS directly
+/// Returns `false` for plain HTTP, which is the common local-network and
+/// mobile-on-LAN case where a `Secure`-flagged cookie would be silently
+/// dropped by the browser
+pub(crate) fn request_is_https(headers: &axum::http::HeaderMap, uri: &axum::http::Uri) -> bool {
+    if let Some(proto) = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+    {
+        return proto
+            .split(',')
+            .next()
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("https"));
+    }
+    uri.scheme_str() == Some("https")
+}
+
+/// Builds a `Set-Cookie` header value for the session cookie
+///
+/// `secure` controls the `Secure` attribute. `max_age_secs` of `None` clears
+/// the cookie (used by logout); `Some(seconds)` sets a fresh expiry. The
+/// cookie is always `HttpOnly`, `SameSite=Strict`, and scoped to `/`
+fn build_session_cookie_header(
+    token: &str,
+    secure: bool,
+    max_age_secs: Option<u64>,
+) -> Result<axum::http::header::HeaderValue, ApiError> {
+    let dur = match max_age_secs {
+        Some(secs) => std::time::Duration::from_secs(secs),
+        None => std::time::Duration::ZERO,
+    };
+    let cookie = Cookie::build((COOKIE_NAME, token.to_string()))
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .max_age(
+            dur.try_into()
+                .map_err(|_| ApiError::Internal("duration conversion failed".into()))?,
+        )
+        .build();
+    cookie
+        .to_string()
+        .parse()
+        .map_err(|e: axum::http::header::InvalidHeaderValue| ApiError::Internal(e.to_string()))
+}
+
+/// Builds a `Set-Cookie` header value for an issued session token
+///
+/// Convenience for handlers outside this module (e.g. password change) that
+/// need to set the session cookie on their response. `secure` should be the
+/// result of [`request_is_https`] for the originating request
+pub(crate) fn session_cookie_header(
+    token: &str,
+    secure: bool,
+) -> Result<axum::http::header::HeaderValue, ApiError> {
+    build_session_cookie_header(token, secure, Some(SESSION_MAX_AGE))
+}
+
+/// Removes `old_token` from the session store (if any) and inserts a freshly
+/// generated session. Returns the new token so the caller can set it as a
+/// cookie on the outgoing response
+pub(crate) async fn rotate_session(old_token: Option<&str>) -> Result<String, ApiError> {
+    let new_token = generate_session_token()?;
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + SESSION_MAX_AGE;
+    let mut store = SESSION_STORE.write().await;
+    if let Some(t) = old_token {
+        store.remove(t);
+    }
+    store.insert(
+        new_token.clone(),
+        Session {
+            _user: ADMIN_USER.into(),
+            expires_at: expiry,
+        },
+    );
+    Ok(new_token)
+}
+
 /// Handles `POST /api/auth/login`
 ///
 /// Verifies the password against the stored argon2 hash and sets an
 /// `HttpOnly` session cookie on success. If no password is configured
 /// (`admin_password_hash` is `None`), login succeeds unconditionally
-pub async fn login(Json(req): Json<LoginRequest>) -> Result<Response, ApiError> {
+pub async fn login(
+    headers: axum::http::HeaderMap,
+    uri: axum::http::Uri,
+    Json(req): Json<LoginRequest>,
+) -> Result<Response, ApiError> {
+    let secure = request_is_https(&headers, &uri);
     let cfg = config::config().read().await;
     // --------------------------------------------------
     // check password with argon2
@@ -136,53 +227,15 @@ pub async fn login(Json(req): Json<LoginRequest>) -> Result<Response, ApiError> 
         }
         None => true,
     };
+    drop(cfg);
     if !password_ok {
         return Ok(Json(LoginResponse { success: false }).into_response());
     }
     // --------------------------------------------------
-    // release the config read lock before acquiring the
-    // session store write lock
+    // generate and store the session, then set the cookie
     // --------------------------------------------------
-    drop(cfg);
-    // --------------------------------------------------
-    // generate random session token
-    // --------------------------------------------------
-    let session_token = generate_session_token()?;
-    // --------------------------------------------------
-    // store session server-side
-    // --------------------------------------------------
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        + SESSION_MAX_AGE;
-    SESSION_STORE.write().await.insert(
-        session_token.clone(),
-        Session {
-            _user: ADMIN_USER.into(),
-            expires_at: expiry,
-        },
-    );
-    // --------------------------------------------------
-    // build the cookie with the session token
-    // --------------------------------------------------
-    let cookie: axum::http::header::HeaderValue = Cookie::build((COOKIE_NAME, session_token))
-        .http_only(true)
-        .secure(true)
-        .same_site(SameSite::Strict)
-        .path("/")
-        .max_age(
-            std::time::Duration::from_secs(SESSION_MAX_AGE)
-                .try_into()
-                .map_err(|_| ApiError::Internal("duration conversion failed".into()))?,
-        )
-        .build()
-        .to_string()
-        .parse()
-        .map_err(|e: axum::http::header::InvalidHeaderValue| ApiError::Internal(e.to_string()))?;
-    // --------------------------------------------------
-    // insert the Set-Cookie header into the response
-    // --------------------------------------------------
+    let token = rotate_session(None).await?;
+    let cookie = session_cookie_header(&token, secure)?;
     let mut response = Json(LoginResponse { success: true }).into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(response)
@@ -194,39 +247,75 @@ pub async fn login(Json(req): Json<LoginRequest>) -> Result<Response, ApiError> 
 /// if a valid session cookie is present. Always responds with a `Set-Cookie`
 /// header that clears the cookie client-side regardless of whether a session
 /// was found
-pub async fn logout(req: Request) -> Response {
-    // --------------------------------------------------
-    // remove session from store if present
-    // --------------------------------------------------
+pub async fn logout(req: Request) -> Result<Response, ApiError> {
+    let secure = request_is_https(req.headers(), req.uri());
     if let Some(token) = extract_cookie_token(req.headers()) {
         SESSION_STORE.write().await.remove(&token);
     }
-    // --------------------------------------------------
-    // clear the cookie
-    // --------------------------------------------------
-    let cookie_header = format!("{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+    let cookie = build_session_cookie_header("", secure, None)?;
     let mut response = Json(LoginResponse { success: true }).into_response();
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        #[allow(clippy::expect_used, reason = "cookie header is always valid ASCII")]
-        cookie_header.parse().expect("valid cookie header"),
-    );
-    response
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(response)
+}
+
+/// Handles `GET /api/auth/me`
+///
+/// Reports whether the request carries a valid session cookie and whether
+/// the server has a password configured. Used by the frontend on mount to
+/// determine whether to render the authenticated shell or redirect to login
+/// without going through the side effect of any business endpoint
+pub async fn me(req: Request) -> Json<MeResponse> {
+    let password_required = config::config()
+        .read()
+        .await
+        .persistent
+        .admin_password_hash
+        .is_some();
+    if !password_required {
+        return Json(MeResponse {
+            logged_in: true,
+            password_required: false,
+        });
+    }
+    let logged_in = match extract_cookie_token(req.headers()) {
+        Some(token) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            SESSION_STORE
+                .read()
+                .await
+                .get(&token)
+                .is_some_and(|s| s.expires_at > now)
+        }
+        None => false,
+    };
+    Json(MeResponse {
+        logged_in,
+        password_required,
+    })
 }
 
 /// Auth middleware that validates the session cookie
 ///
 /// Bypasses auth for:
 /// - `POST /api/auth/login` (must work without auth)
+/// - `POST /api/auth/logout` (idempotent; safe even without a session)
+/// - `GET /api/auth/me` (probe endpoint reports auth state itself)
 /// - `GET /api/theme` (public endpoint for unauthenticated theme loading)
 /// - All requests when no password is configured
 pub async fn middleware(req: Request, next: Next) -> Result<Response, ApiError> {
     let path = req.uri().path();
     let method = req.method().clone();
     // --------------------------------------------------
-    // bypass: login and public theme endpoints
+    // bypass: auth + public endpoints
     // --------------------------------------------------
-    if path == "/auth/login" || (method == axum::http::Method::GET && path == "/theme") {
+    if path == "/auth/login"
+        || path == "/auth/logout"
+        || (method == axum::http::Method::GET && path == "/auth/me")
+        || (method == axum::http::Method::GET && path == "/theme")
+    {
         return Ok(next.run(req).await);
     }
     // --------------------------------------------------
@@ -297,5 +386,42 @@ mod tests {
                 .is_err(),
             "wrong password should fail"
         );
+    }
+
+    #[tokio::test]
+    async fn rotate_session_replaces_old_token() {
+        let initial = rotate_session(None).await.expect("create initial session");
+        assert!(SESSION_STORE.read().await.contains_key(&initial));
+        let next = rotate_session(Some(&initial))
+            .await
+            .expect("rotate session");
+        let store = SESSION_STORE.read().await;
+        assert!(!store.contains_key(&initial), "old token must be removed");
+        assert!(store.contains_key(&next), "new token must be present");
+    }
+
+    #[test]
+    fn https_detection_prefers_x_forwarded_proto() {
+        let mut headers = axum::http::HeaderMap::new();
+        let uri: axum::http::Uri = "/api/foo".parse().expect("uri");
+        assert!(!request_is_https(&headers, &uri));
+        headers.insert("x-forwarded-proto", "https".parse().expect("hv"));
+        assert!(request_is_https(&headers, &uri));
+        headers.insert("x-forwarded-proto", "http".parse().expect("hv"));
+        assert!(!request_is_https(&headers, &uri));
+    }
+
+    #[test]
+    fn cookie_header_omits_secure_on_http() {
+        let header = build_session_cookie_header("abc", false, Some(60)).expect("build");
+        let s = header.to_str().expect("ascii");
+        assert!(!s.to_ascii_lowercase().contains("secure"), "got: {s}");
+    }
+
+    #[test]
+    fn cookie_header_includes_secure_on_https() {
+        let header = build_session_cookie_header("abc", true, Some(60)).expect("build");
+        let s = header.to_str().expect("ascii");
+        assert!(s.to_ascii_lowercase().contains("secure"), "got: {s}");
     }
 }

@@ -15,7 +15,12 @@ use crate::config;
 // external
 // --------------------------------------------------
 use argon2::PasswordVerifier;
-use axum::Json;
+use axum::{
+    Json,
+    extract::Request,
+    http::header,
+    response::{IntoResponse, Response},
+};
 use serde::{Deserialize, Serialize};
 
 // --------------------------------------------------
@@ -97,60 +102,89 @@ pub async fn update_settings(
 /// Handles `POST /api/settings/password`
 ///
 /// Verifies the currently stored admin password (if one exists), hashes the
-/// new password with argon2, persists the new hash to disk, then invalidates
-/// all active sessions so every client must log in again with the new password
-/// If no password is currently set the old-password check is skipped entirely
-/// Returns 401 Unauthorized if the old password does not match, or 500 if
-/// hashing or the disk write fails
+/// new password with argon2 outside any lock, then updates the stored hash
+/// under a write lock with a compare-and-swap so concurrent password changes
+/// can't silently overwrite each other
 ///
-/// # Arguments
+/// On success, every existing session is invalidated except the caller's,
+/// which is rotated to a fresh token returned in a `Set-Cookie` header so
+/// the user stays logged in seamlessly
 ///
-/// * `req` - JSON body deserialized into [`ChangePasswordRequest`]; `old_password`
-///   must match the currently stored hash (or be ignored when none is set),
-///   and `new_password` is the plaintext password to hash and store
-pub async fn change_password(
-    Json(req): Json<ChangePasswordRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+/// Returns 401 Unauthorized if the old password does not match (or the hash
+/// changed under us), or 500 if hashing or the disk write fails
+pub async fn change_password(req: Request) -> Result<Response, ApiError> {
     // --------------------------------------------------
-    // acquire a write lock on the config for the duration
-    // of the password verification and update
+    // capture request metadata before consuming the body
     // --------------------------------------------------
-    let mut cfg = config::config().write().await;
+    let secure = crate::auth::request_is_https(req.headers(), req.uri());
+    let caller_token = crate::auth::extract_cookie_token(req.headers());
+    let (_, body) = req.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 * 1024)
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("failed to read body: {e}")))?;
+    let payload: ChangePasswordRequest = serde_json::from_slice(&bytes)
+        .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
     // --------------------------------------------------
-    // verify old password if one is currently stored;
-    // skip the check entirely when no password is set
+    // verify old password under a read lock and snapshot
+    // the current hash so we can compare-and-swap below
     // --------------------------------------------------
-    if let Some(stored_hash) = &cfg.persistent.admin_password_hash {
-        let parsed_hash = argon2::PasswordHash::new(stored_hash)
-            .map_err(|_| ApiError::Internal("invalid stored password hash".into()))?;
-        if argon2::Argon2::default()
-            .verify_password(req.old_password.as_bytes(), &parsed_hash)
-            .is_err()
-        {
-            return Err(ApiError::Unauthorized);
+    let prior_hash = {
+        let cfg = config::config().read().await;
+        if let Some(stored_hash) = &cfg.persistent.admin_password_hash {
+            let parsed_hash = argon2::PasswordHash::new(stored_hash)
+                .map_err(|_| ApiError::Internal("invalid stored password hash".into()))?;
+            if argon2::Argon2::default()
+                .verify_password(payload.old_password.as_bytes(), &parsed_hash)
+                .is_err()
+            {
+                return Err(ApiError::Unauthorized);
+            }
+            Some(stored_hash.clone())
+        } else {
+            None
         }
-    }
+    };
     // --------------------------------------------------
-    // hash the new password with argon2
+    // hash the new password outside any lock - argon2 is
+    // CPU-bound and we don't want concurrent logins to
+    // stall on a hash computation
     // --------------------------------------------------
     use argon2::PasswordHasher;
     let new_hash = argon2::Argon2::default()
-        .hash_password(req.new_password.as_bytes())
+        .hash_password(payload.new_password.as_bytes())
         .map_err(|e| ApiError::Internal(format!("failed to hash password: {e}")))?
         .to_string();
     // --------------------------------------------------
-    // store the new hash and persist to disk
+    // commit under a write lock with compare-and-swap so
+    // a concurrent password change can't be silently
+    // clobbered. on mismatch return Unauthorized so the
+    // caller refetches and tries again
     // --------------------------------------------------
-    cfg.persistent.admin_password_hash = Some(new_hash);
-    cfg.persistent
-        .save()
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    drop(cfg);
+    {
+        let mut cfg = config::config().write().await;
+        if cfg.persistent.admin_password_hash != prior_hash {
+            return Err(ApiError::Unauthorized);
+        }
+        cfg.persistent.admin_password_hash = Some(new_hash);
+        cfg.persistent
+            .save()
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
     // --------------------------------------------------
-    // clear all active sessions to force every client to
-    // re-authenticate with the new password
+    // invalidate every other session and rotate the caller's
+    // own session to a fresh token so they stay logged in
     // --------------------------------------------------
     crate::auth::SESSION_STORE.write().await.clear();
-    tracing::info!("Admin password changed, sessions cleared");
-    Ok(Json(serde_json::json!({ "success": true })))
+    let new_token = crate::auth::rotate_session(None).await?;
+    let cookie = crate::auth::session_cookie_header(&new_token, secure)?;
+    // --------------------------------------------------
+    // build the response with the rotated session cookie
+    // --------------------------------------------------
+    let mut response = Json(serde_json::json!({ "success": true })).into_response();
+    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    tracing::info!(
+        "Admin password changed; sessions cleared, caller session rotated (had_prior={})",
+        caller_token.is_some()
+    );
+    Ok(response)
 }

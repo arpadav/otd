@@ -61,6 +61,7 @@
     let editExpiryUnit = $state(EXPIRY_UNITS.hours);
     /** true while the edit request is in flight */
     let saving = $state(false);
+    let copied = $state<boolean | null>(null);
 
     // --------------------------------------------------
     // derived
@@ -176,14 +177,29 @@
      * then shows a brief success toast for user feedback
      */
     async function copyUrl() {
-        // --------------------------------------------------
-        // write the download URL to the system clipboard
-        // --------------------------------------------------
-        await navigator.clipboard.writeText(link.download_url);
-        // --------------------------------------------------
-        // show a brief success toast (auto-dismisses in 2s)
-        // --------------------------------------------------
-        addToast("Link copied to clipboard", "success", 2000);
+        let success = false;
+        try {
+            await navigator.clipboard.writeText(link.download_url);
+            success = true;
+        } catch {
+            // fallback for mobile / non-HTTPS contexts
+            const el = document.createElement("textarea");
+            el.value = link.download_url;
+            el.style.cssText = "position:absolute;left:-9999px;top:-9999px";
+            el.setAttribute("readonly", "");
+            document.body.appendChild(el);
+            el.select();
+            el.setSelectionRange(0, el.value.length);
+            success = document.execCommand("copy");
+            document.body.removeChild(el);
+        }
+        copied = success;
+        if (success) {
+            addToast("Link copied to clipboard", "success", 2000);
+        } else {
+            addToast("Failed to copy link", "error", 2000);
+        }
+        setTimeout(() => (copied = null), 2000);
     }
 </script>
 
@@ -210,9 +226,17 @@
             <button
                 onclick={copyUrl}
                 title="Copy download URL"
-                class="p-2 rounded-lg text-text-muted hover:text-text hover:bg-surface-active transition-colors"
+                class="p-2 rounded-lg transition-colors {copied === true
+                    ? 'text-green-500 hover:text-green-400'
+                    : copied === false
+                      ? 'text-red-500 hover:text-red-400'
+                      : 'text-text-muted hover:text-text hover:bg-surface-active'}"
             >
-                <Copy size={16} />
+                {#if copied === true}
+                    <Check size={16} />
+                {:else}
+                    <Copy size={16} />
+                {/if}
             </button>
             <a
                 href={link.download_url}

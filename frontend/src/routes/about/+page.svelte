@@ -85,14 +85,27 @@
                     <Coffee size={16} />
                     Buy Me a Coffee
                 </a>
-                <div
+                <button
+                    type="button"
+                    title="Click to select address"
+                    onclick={(e) => {
+                        const code = e.currentTarget.querySelector("code");
+                        if (!code) return;
+                        const range = document.createRange();
+                        range.selectNodeContents(code);
+                        const sel = window.getSelection();
+                        sel?.removeAllRanges();
+                        sel?.addRange(range);
+                    }}
                     class="inline-flex items-center gap-2 px-4 py-2 text-sm text-text-muted
-					bg-surface-alt border border-border rounded-lg"
+					bg-surface-alt border border-border rounded-lg cursor-pointer
+					hover:bg-surface-hover transition-colors
+					focus:outline-none focus:ring-2 focus:ring-accent/40"
                 >
                     <!-- <Bitcoin size={16} /> -->
                     <span>&#8383;</span>
-                    <code class="font-mono text-xs">bc1q...</code>
-                </div>
+                    <code class="font-mono text-xs select-all">bc1q5stdywthj254agv80s5gky6440xy73cpqgv0q7</code>
+                </button>
             </div>
         </div>
     </div>
