@@ -232,9 +232,10 @@ impl ParsedConfig {
         // resolve download base URL: persistent > derived from CLI
         // --------------------------------------------------
         assert_https_not_implemented(cli.https);
-        let download_base_url = persistent.download_base_url.clone().unwrap_or_else(|| {
-            format!("http://{}:{}", cli.download_host, cli.download_port)
-        });
+        let download_base_url = persistent
+            .download_base_url
+            .clone()
+            .unwrap_or_else(|| format!("http://{}:{}", cli.download_host, cli.download_port));
         // --------------------------------------------------
         // resolve base path: CLI > cwd > /tmp
         // --------------------------------------------------
