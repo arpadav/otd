@@ -116,9 +116,12 @@ pub(crate) struct CliConfig {
     #[arg(long, default_value_t = DEFAULT_DOWNLOAD_PORT)]
     pub download_port: u16,
 
-    /// Disable HTTPS (HTTPS is enabled by default)
+    /// Use https:// scheme in generated download URLs
+    ///
+    /// NOT IMPLEMENTED - otd does not terminate TLS. Run otd over plain HTTP
+    /// behind a reverse proxy (nginx/caddy/traefik) if you need HTTPS
     #[arg(long)]
-    pub no_https: bool,
+    pub https: bool,
 
     /// Base directory for file serving (defaults to current directory)
     #[arg(long)]
@@ -228,10 +231,9 @@ impl ParsedConfig {
         // --------------------------------------------------
         // resolve download base URL: persistent > derived from CLI
         // --------------------------------------------------
-        let enable_https = !cli.no_https;
+        assert_https_not_implemented(cli.https);
         let download_base_url = persistent.download_base_url.clone().unwrap_or_else(|| {
-            let protocol = if enable_https { "https" } else { "http" };
-            format!("{protocol}://{}:{}", cli.download_host, cli.download_port)
+            format!("http://{}:{}", cli.download_host, cli.download_port)
         });
         // --------------------------------------------------
         // resolve base path: CLI > cwd > /tmp
@@ -263,15 +265,14 @@ impl ParsedConfig {
     /// persistent override or falls back to the CLI host/port with the appropriate
     /// `http`/`https` scheme
     pub(crate) fn refresh_download_base_url(&mut self) {
-        let enable_https = !self.cli.no_https;
+        assert_https_not_implemented(self.cli.https);
         self.download_base_url = self
             .persistent
             .download_base_url
             .clone()
             .unwrap_or_else(|| {
-                let protocol = if enable_https { "https" } else { "http" };
                 format!(
-                    "{protocol}://{}:{}",
+                    "http://{}:{}",
                     self.cli.download_host, self.cli.download_port
                 )
             });
@@ -324,6 +325,25 @@ impl ParsedConfig {
             token
         )
     }
+}
+
+#[inline]
+/// Panics with a clear message if `https` is true
+///
+/// otd does not terminate TLS; the `--https` flag would only swap the URL
+/// scheme in generated download links, producing broken URLs unless a reverse
+/// proxy is in front. Until real TLS termination lands, refuse to start
+///
+/// # Panics
+///
+/// Panics if `https` is true
+fn assert_https_not_implemented(https: bool) {
+    assert!(
+        !https,
+        "--https is not implemented yet: otd does not terminate TLS. \
+         Run otd over plain HTTP behind a reverse proxy \
+         (nginx/caddy/traefik) if you need HTTPS"
+    );
 }
 
 #[inline(always)]
@@ -445,7 +465,7 @@ mod tests {
         assert_eq!(cli.download_port, 15205);
         assert_eq!(cli.admin_host, "127.0.0.1");
         assert_eq!(cli.download_host, "0.0.0.0");
-        assert!(!cli.no_https);
+        assert!(!cli.https);
         assert!(cli.base_path.is_none());
     }
 
@@ -456,15 +476,15 @@ mod tests {
         let parsed = ParsedConfig::resolve(cli, persistent);
         assert_eq!(parsed.admin_addr.port(), 15204);
         assert_eq!(parsed.download_addr.port(), 15205);
-        assert_eq!(parsed.download_base_url, "https://0.0.0.0:15205");
+        assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
     }
 
     #[test]
-    fn test_no_https_flag() {
-        let cli = CliConfig::parse_from(["otd", "--no-https"]);
+    #[should_panic(expected = "--https is not implemented yet")]
+    fn test_https_flag_panics() {
+        let cli = CliConfig::parse_from(["otd", "--https"]);
         let persistent = PersistentConfig::default();
-        let parsed = ParsedConfig::resolve(cli, persistent);
-        assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
+        let _ = ParsedConfig::resolve(cli, persistent);
     }
 
     #[test]
@@ -549,7 +569,7 @@ mod tests {
         let cli = CliConfig::parse_from(["otd"]);
         let persistent = PersistentConfig::default();
         let mut parsed = ParsedConfig::resolve(cli, persistent);
-        assert_eq!(parsed.download_base_url, "https://0.0.0.0:15205");
+        assert_eq!(parsed.download_base_url, "http://0.0.0.0:15205");
 
         parsed.persistent.download_base_url = Some("https://custom.url".into());
         parsed.refresh_download_base_url();

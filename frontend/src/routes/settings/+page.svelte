@@ -87,8 +87,12 @@
             newPassword = "";
             confirmPassword = "";
             addToast("Password changed successfully", "success");
-        } catch {
-            addToast("Failed to change password", "error");
+        } catch (e) {
+            const msg =
+                e instanceof Error && e.message === "Unauthorized"
+                    ? "Current password is incorrect"
+                    : "Failed to change password";
+            addToast(msg, "error");
         } finally {
             savingPassword = false;
         }

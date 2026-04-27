@@ -270,7 +270,9 @@ export const api = {
 	/**
 	 * Changes the admin password.
 	 *
-	 * Verifies the old password, hashes the new one, and clears all sessions.
+	 * Uses `silent401` because a 401 here means the supplied current password
+	 * was wrong - the caller surfaces that as a form error rather than letting
+	 * the global handler bounce the user to `/login`.
 	 *
 	 * @param req - Old and new password
 	 * @returns Resolves on success
@@ -279,6 +281,7 @@ export const api = {
 		return request('/api/settings/password', {
 			method: 'POST',
 			body: JSON.stringify(req),
+			silent401: true,
 		});
 	},
 };

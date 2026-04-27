@@ -26,6 +26,8 @@
     let items = $state<FileItem[]>([]);
     /** set of file paths the user has checked for link generation */
     let selected = $state<Set<string>>(new Set());
+    /** subset of `selected` that are directories (drives archive picker visibility) */
+    let selectedFolders = $state<Set<string>>(new Set());
     /** true while a browse API request is in flight - drives skeleton UI */
     let loading = $state(true);
     /** current value of the search input - filters `items` into `filtered` */
@@ -67,6 +69,16 @@
     );
     /** number of currently selected files - drives button label and guard */
     let selectedCount = $derived(selected.size);
+    /**
+     * Whether the archive format picker should be shown
+     *
+     * The backend archives whenever the link covers multiple paths or a single
+     * directory, so the picker must appear in both cases — a single file is
+     * the only selection that is streamed verbatim
+     */
+    let showFormatPicker = $derived(
+        selectedCount > 1 || selectedFolders.size > 0,
+    );
 
     // --------------------------------------------------
     // alias for readability
@@ -133,12 +145,16 @@
      */
     function toggleSelect(item: FileItem) {
         const next = new Set(selected);
+        const nextFolders = new Set(selectedFolders);
         if (next.has(item.path)) {
             next.delete(item.path);
+            nextFolders.delete(item.path);
         } else {
             next.add(item.path);
+            if (item.is_dir) nextFolders.add(item.path);
         }
         selected = next;
+        selectedFolders = nextFolders;
     }
 
     /**
@@ -152,6 +168,11 @@
         const next = new Set(selected);
         next.delete(path);
         selected = next;
+        if (selectedFolders.has(path)) {
+            const nextFolders = new Set(selectedFolders);
+            nextFolders.delete(path);
+            selectedFolders = nextFolders;
+        }
     }
 
     /**
@@ -160,13 +181,21 @@
      */
     function selectAll() {
         const next = new Set(selected);
+        const nextFolders = new Set(selectedFolders);
         const allVisible = filtered.every((i) => next.has(i.path));
         if (allVisible) {
-            for (const i of filtered) next.delete(i.path);
+            for (const i of filtered) {
+                next.delete(i.path);
+                nextFolders.delete(i.path);
+            }
         } else {
-            for (const i of filtered) next.add(i.path);
+            for (const i of filtered) {
+                next.add(i.path);
+                if (i.is_dir) nextFolders.add(i.path);
+            }
         }
         selected = next;
+        selectedFolders = nextFolders;
     }
 
     /**
@@ -215,9 +244,10 @@
                 expires_in_seconds: computeExpirySeconds(),
             };
             // --------------------------------------------------
-            // include archive format only for multi-file links
+            // include archive format whenever the link will be archived
+            // (multiple items, or a single directory)
             // --------------------------------------------------
-            if (selectedCount > 1) {
+            if (showFormatPicker) {
                 req.format = genFormat;
             }
             const res = await api.generateLink(req);
@@ -225,6 +255,7 @@
             addToast("Link created and copied to clipboard", "success");
             generateOpen = false;
             selected = new Set();
+            selectedFolders = new Set();
             // --------------------------------------------------
             // redirect to the links page after successful creation
             // --------------------------------------------------
@@ -343,7 +374,10 @@
                             Staged ({selectedCount})
                         </h3>
                         <button
-                            onclick={() => (selected = new Set())}
+                            onclick={() => {
+                                selected = new Set();
+                                selectedFolders = new Set();
+                            }}
                             class="text-xs text-text-muted hover:text-danger transition-colors"
                         >
                             Clear all
@@ -478,8 +512,8 @@
             {/if}
         </div>
 
-        <!-- archive format (multi-file only) -->
-        {#if selectedCount > 1}
+        <!-- archive format (shown for multi-file links and single-folder links) -->
+        {#if showFormatPicker}
             <div>
                 <label
                     for="gen-format"

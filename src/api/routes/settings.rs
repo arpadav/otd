@@ -18,7 +18,6 @@ use argon2::PasswordVerifier;
 use axum::{
     Json,
     extract::Request,
-    http::header,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -106,17 +105,17 @@ pub async fn update_settings(
 /// under a write lock with a compare-and-swap so concurrent password changes
 /// can't silently overwrite each other
 ///
-/// On success, every existing session is invalidated except the caller's,
-/// which is rotated to a fresh token returned in a `Set-Cookie` header so
-/// the user stays logged in seamlessly
+/// On success, every other session is invalidated and the caller's existing
+/// session is retained so they stay logged in here while every other tab or
+/// device is forced to re-authenticate
 ///
 /// Returns 401 Unauthorized if the old password does not match (or the hash
 /// changed under us), or 500 if hashing or the disk write fails
 pub async fn change_password(req: Request) -> Result<Response, ApiError> {
     // --------------------------------------------------
-    // capture request metadata before consuming the body
+    // capture caller token before consuming the body so
+    // we can preserve the caller's session below
     // --------------------------------------------------
-    let secure = crate::auth::request_is_https(req.headers(), req.uri());
     let caller_token = crate::auth::extract_cookie_token(req.headers());
     let (_, body) = req.into_parts();
     let bytes = axum::body::to_bytes(body, 64 * 1024)
@@ -171,20 +170,20 @@ pub async fn change_password(req: Request) -> Result<Response, ApiError> {
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
     // --------------------------------------------------
-    // invalidate every other session and rotate the caller's
-    // own session to a fresh token so they stay logged in
+    // invalidate every session except the caller's so the
+    // caller's existing cookie keeps working - no Set-Cookie
+    // dance, no risk of the browser dropping the new cookie
     // --------------------------------------------------
-    crate::auth::SESSION_STORE.write().await.clear();
-    let new_token = crate::auth::rotate_session(None).await?;
-    let cookie = crate::auth::session_cookie_header(&new_token, secure)?;
-    // --------------------------------------------------
-    // build the response with the rotated session cookie
-    // --------------------------------------------------
-    let mut response = Json(serde_json::json!({ "success": true })).into_response();
-    response.headers_mut().insert(header::SET_COOKIE, cookie);
+    {
+        let mut store = crate::auth::SESSION_STORE.write().await;
+        match &caller_token {
+            Some(token) => store.retain(|k, _| k == token),
+            None => store.clear(),
+        }
+    }
     tracing::info!(
-        "Admin password changed; sessions cleared, caller session rotated (had_prior={})",
+        "Admin password changed; other sessions cleared (caller_preserved={})",
         caller_token.is_some()
     );
-    Ok(response)
+    Ok(Json(serde_json::json!({ "success": true })).into_response())
 }
