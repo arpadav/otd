@@ -36,7 +36,6 @@ serve:
 	@echo "Starting dev servers..."
 	@bash -c '\
 	trap "pkill -P $$$$ 2>/dev/null; kill -- -$$$$ 2>/dev/null" INT TERM EXIT; \
-	cd frontend && npm run dev & \
 	cargo run -- --admin-host 0.0.0.0 & \
 	wait'
 
